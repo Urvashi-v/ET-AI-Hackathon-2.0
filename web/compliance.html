@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Compliance · Asset &amp; Operations Brain</title>
+  <link rel="stylesheet" href="css/base.css">
+  <style>
+    .heat { display: grid; grid-template-columns: repeat(auto-fill, minmax(24px, 1fr)); gap: 3px; }
+    .heat i { aspect-ratio: 1; border-radius: 2px; display: block; cursor: pointer; }
+    .heat i.satisfied { background: var(--ok-bg); border: 1px solid var(--ok); }
+    .heat i.no_control { background: var(--danger-bg); border: 1px solid var(--danger); }
+    .heat i.evidence_stale, .heat i.evidence_missing { background: var(--warn-bg); border: 1px solid var(--warn); }
+  </style>
+</head>
+<body>
+  <header class="app-header" data-app-header></header>
+
+  <main class="app-main">
+    <div class="page-head">
+      <div>
+        <p class="eyebrow">Quality &amp; regulatory</p>
+        <h1>Compliance studio</h1>
+        <p class="lede">
+          A compliance gap is the absence of an edge: a requirement with no control that satisfies
+          it, or a control whose evidence has gone stale. Requirement provenance is reported on
+          every scan, because a finding is only as good as the traceability of the obligation
+          behind it.
+        </p>
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom:14px">
+      <div class="card-body">
+        <form class="toolbar" data-scan-form>
+          <label class="field grow" style="margin:0">
+            <span>Standard (blank = all)</span>
+            <input type="text" name="standard" placeholder="OISD-STD-105" list="standard-list">
+            <datalist id="standard-list"></datalist>
+          </label>
+          <label class="field grow" style="margin:0">
+            <span>Asset scope</span>
+            <input type="text" name="asset_tag" placeholder="P-101B">
+          </label>
+          <label class="field" style="margin:0;width:120px">
+            <span>Years</span>
+            <input type="number" name="years" value="3" min="1" max="25">
+          </label>
+          <button class="primary" type="submit">Scan</button>
+          <button type="button" data-evidence-pack>Generate evidence package</button>
+        </form>
+      </div>
+    </div>
+
+    <section class="grid cols-4" data-summary aria-label="Compliance summary">
+      <div class="metric"><div class="metric-label">In scope</div><div class="metric-value is-pending">—</div></div>
+      <div class="metric"><div class="metric-label">Satisfied</div><div class="metric-value is-pending">—</div></div>
+      <div class="metric"><div class="metric-label">Gaps</div><div class="metric-value is-pending">—</div></div>
+      <div class="metric"><div class="metric-label">Coverage</div><div class="metric-value is-pending">—</div></div>
+    </section>
+
+    <div class="grid sidebar" style="margin-top:14px">
+      <div class="stack">
+        <section class="card">
+          <div class="card-head">
+            <h2>Gaps</h2>
+            <span class="small dim" data-gap-count></span>
+          </div>
+          <div class="card-body flush scroll-y h-520" data-gaps></div>
+        </section>
+
+        <section class="card">
+          <div class="card-head">
+            <h2>Requirements in the system</h2>
+            <span class="small dim" data-req-count></span>
+          </div>
+          <div class="card-body flush scroll-y h-360" data-requirements></div>
+        </section>
+      </div>
+
+      <div class="stack">
+        <section class="card">
+          <div class="card-head"><h2>Scan status</h2></div>
+          <div class="card-body" data-status></div>
+        </section>
+
+        <!-- Provenance is a first-class panel here, not a footnote. -->
+        <section class="card">
+          <div class="card-head"><h2>Requirement provenance</h2></div>
+          <div class="card-body" data-provenance></div>
+        </section>
+
+        <section class="card">
+          <div class="card-head"><h2>Coverage map</h2></div>
+          <div class="card-body" data-heat></div>
+        </section>
+
+        <section class="card" data-detail-card hidden>
+          <div class="card-head"><h2>Requirement</h2><button class="small ghost" data-close-detail>Close</button></div>
+          <div class="card-body" data-detail></div>
+        </section>
+      </div>
+    </div>
+  </main>
+
+  <script type="module">
+    import { api } from './js/api.js';
+    import {
+      esc, provBadge, renderLoading, renderError, renderEmpty, renderCapability,
+      mountHeader, mountSystemStatus, fmtDate, fmtNumber,
+    } from './js/ui.js';
+
+    mountHeader('compliance.html');
+    mountSystemStatus(api);
+
+    const $ = (sel) => document.querySelector(sel);
+    let lastScan = null;
+
+    function metric(label, value, foot, pending = false) {
+      return `<div class="metric">
+        <div class="metric-label">${esc(label)}</div>
+        <div class="metric-value${pending ? ' is-pending' : ''}">${esc(value)}</div>
+        ${foot ? `<div class="metric-foot">${foot}</div>` : ''}
+      </div>`;
+    }
+
+    async function scan(scope) {
+      const status = $('[data-status]');
+      renderLoading(status, 'Scanning');
+      renderLoading($('[data-gaps]'));
+      try {
+        const result = await api.compliance({ scope });
+        lastScan = result;
+
+        status.innerHTML = renderCapability(result.status);
+
+        $('[data-summary]').innerHTML = [
+          metric('In scope', fmtNumber(result.requirements_in_scope), provBadge('reference_taxonomy')),
+          metric('Satisfied', fmtNumber(result.satisfied), provBadge('calculated_metric')),
+          metric('Gaps', fmtNumber(result.gaps.length), provBadge('calculated_metric')),
+          metric('Coverage',
+                 result.coverage_pct === null ? 'n/a' : `${result.coverage_pct}%`,
+                 provBadge('calculated_metric'),
+                 result.coverage_pct === null),
+        ].join('');
+
+        renderProvenance(result);
+        renderGaps(result.gaps);
+        renderHeat(result);
+      } catch (error) {
+        renderError(status, error, { title: 'Scan failed' });
+        $('[data-gaps]').innerHTML = '';
+      }
+    }
+
+    function renderProvenance(result) {
+      const node = $('[data-provenance]');
+      const entries = Object.entries(result.requirement_provenance || {});
+      if (!entries.length) {
+        node.innerHTML = '<p class="small muted">No requirements loaded.</p>';
+        return;
+      }
+      const paraphrased = result.requirement_provenance.paraphrase_for_demo || 0;
+      node.innerHTML = `
+        <dl class="kv">${entries.map(([status, count]) => `
+          <dt>${esc(status.replaceAll('_', ' '))}</dt>
+          <dd class="mono tabular">${count}</dd>`).join('')}</dl>
+        ${paraphrased ? `
+          <div class="capability" style="margin-top:12px;border-color:var(--warn)">
+            <h4><span class="badge warn">Not audit-grade</span></h4>
+            <p>${paraphrased} requirement(s) in scope carry plain-English text written for this
+               project rather than verbatim standard text. Findings against them demonstrate the
+               mechanism; they must not be used to assert a regulatory position.</p>
+            <p class="small dim">See <code>data/requirements/README.md</code> for how to replace them.</p>
+          </div>` : ''}`;
+    }
+
+    function renderGaps(gaps) {
+      const node = $('[data-gaps]');
+      $('[data-gap-count]').textContent = `${gaps.length} gap(s)`;
+      if (!gaps.length) {
+        renderEmpty(node, {
+          title: 'No gaps in scope',
+          body: 'Every requirement in scope is satisfied by a control with current evidence.',
+        });
+        return;
+      }
+      const severityBadge = { high: 'danger', medium: 'warn', low: 'neutral' };
+      const typeLabel = {
+        no_control: 'No control',
+        content_gap: 'Inadequate control',
+        evidence_stale: 'Evidence stale',
+        evidence_missing: 'Evidence missing',
+      };
+      node.innerHTML = `<ul class="list">${gaps.map((gap) => `
+        <li class="is-clickable" data-req="${esc(gap.req_id)}">
+          <div class="row" style="justify-content:space-between">
+            <span class="row tight">
+              <span class="badge ${severityBadge[gap.severity] || 'neutral'}">${esc(gap.severity)}</span>
+              <span class="badge neutral no-dot">${esc(typeLabel[gap.gap_type] || gap.gap_type)}</span>
+              <strong class="mono small">${esc(gap.source_standard)} ${esc(gap.clause)}</strong>
+            </span>
+            <span class="row tight">
+              <span class="badge ${gap.modality === 'shall' ? 'danger' : 'neutral'} no-dot"
+                    title="shall = mandatory, should = recommended, may = permissive. These carry different legal weight.">${esc(gap.modality)}</span>
+              ${provBadge(gap.data_class)}
+            </span>
+          </div>
+          <div class="small" style="margin-top:5px;color:var(--fg-0)">${esc(gap.obligation_text)}</div>
+          <div class="small dim" style="margin-top:4px">${esc(gap.detail)}</div>
+          ${gap.latest_evidence ? `<div class="ts" style="margin-top:3px">latest evidence ${fmtDate(gap.latest_evidence)}</div>` : ''}
+        </li>`).join('')}</ul>`;
+    }
+
+    function renderHeat(result) {
+      const node = $('[data-heat]');
+      const total = result.requirements_in_scope;
+      if (!total) { node.innerHTML = '<p class="small muted">Nothing in scope.</p>'; return; }
+      const gapByReq = new Map(result.gaps.map((g) => [g.req_id, g]));
+      const cells = [];
+      for (const gap of result.gaps) {
+        cells.push(`<i class="${esc(gap.gap_type)}" data-req="${esc(gap.req_id)}"
+                       title="${esc(`${gap.source_standard} ${gap.clause} — ${gap.gap_type}`)}"></i>`);
+      }
+      for (let i = 0; i < total - gapByReq.size; i += 1) {
+        cells.push('<i class="satisfied" title="Satisfied with current evidence"></i>');
+      }
+      node.innerHTML = `
+        <div class="heat">${cells.join('')}</div>
+        <div class="row tight small dim" style="margin-top:10px">
+          <span class="gv-key"><i style="width:9px;height:9px;border-radius:2px;display:inline-block;background:var(--ok)"></i> satisfied</span>
+          <span class="gv-key"><i style="width:9px;height:9px;border-radius:2px;display:inline-block;background:var(--warn)"></i> evidence gap</span>
+          <span class="gv-key"><i style="width:9px;height:9px;border-radius:2px;display:inline-block;background:var(--danger)"></i> no control</span>
+        </div>`;
+    }
+
+    async function loadRequirements() {
+      const node = $('[data-requirements]');
+      renderLoading(node);
+      try {
+        const data = await api.requirements({ limit: 300 });
+        $('[data-req-count]').textContent = `${data.total} loaded`;
+        $('#standard-list').innerHTML = data.by_standard
+          .map((s) => `<option value="${esc(s.source_standard)}">${s.n} requirement(s)</option>`).join('');
+
+        if (!data.total) {
+          renderEmpty(node, {
+            title: 'No requirements loaded',
+            body: 'Load a requirement set with scripts/load_requirements.py. See data/requirements/README.md for the provenance rules.',
+          });
+          return;
+        }
+        node.innerHTML = `<div class="table-wrap"><table class="data">
+          <thead><tr><th>Requirement</th><th>Modality</th><th>Applies to</th><th class="num">Freq (mo)</th><th>Text status</th></tr></thead>
+          <tbody>${data.items.map((r) => `
+            <tr class="is-clickable" data-req="${esc(r.req_id)}">
+              <td>
+                <div class="mono small">${esc(r.source_standard)} ${esc(r.clause)}</div>
+                <div class="small muted" style="max-width:44ch">${esc(r.obligation_text.slice(0, 110))}${r.obligation_text.length > 110 ? '…' : ''}</div>
+              </td>
+              <td><span class="badge ${r.modality === 'shall' ? 'danger' : 'neutral'} no-dot">${esc(r.modality)}</span></td>
+              <td class="small muted">${esc(r.applies_to_class || 'any')}</td>
+              <td class="num">${r.frequency_months ?? '—'}</td>
+              <td><span class="badge ${r.text_status === 'verbatim' ? 'ok' : 'warn'} no-dot">${esc(r.text_status)}</span></td>
+            </tr>`).join('')}</tbody></table></div>`;
+        window.__requirements = new Map(data.items.map((r) => [r.req_id, r]));
+      } catch (error) { renderError(node, error); }
+    }
+
+    document.addEventListener('click', (event) => {
+      const target = event.target.closest('[data-req]');
+      if (!target) return;
+      const req = window.__requirements?.get(target.dataset.req);
+      const gap = lastScan?.gaps.find((g) => g.req_id === target.dataset.req);
+      if (!req && !gap) return;
+      $('[data-detail-card]').hidden = false;
+      const source = req || gap;
+      $('[data-detail]').innerHTML = `
+        <div class="row" style="margin-bottom:8px">
+          <strong class="mono">${esc(source.source_standard)} ${esc(source.clause)}</strong>
+          <span class="badge ${source.modality === 'shall' ? 'danger' : 'neutral'} no-dot">${esc(source.modality)}</span>
+        </div>
+        <p class="small" style="color:var(--fg-0)">${esc(source.obligation_text)}</p>
+        <dl class="kv">
+          <dt>Requirement id</dt><dd class="mono small">${esc(source.req_id)}</dd>
+          ${req ? `
+            <dt>Applies to class</dt><dd>${esc(req.applies_to_class || 'any')}</dd>
+            <dt>Testable by</dt><dd class="mono small">${esc(req.testable_by || '—')}</dd>
+            <dt>Frequency</dt><dd>${req.frequency_months ? `${req.frequency_months} months` : '—'}</dd>
+            <dt>Text status</dt><dd><span class="badge ${req.text_status === 'verbatim' ? 'ok' : 'warn'} no-dot">${esc(req.text_status)}</span></dd>` : ''}
+          ${gap ? `<dt>Gap</dt><dd><span class="badge danger">${esc(gap.gap_type)}</span></dd>
+                   <dt>Detail</dt><dd class="small">${esc(gap.detail)}</dd>` : ''}
+        </dl>
+        ${req?.provenance_note ? `
+          <div class="divider"></div>
+          <h4>Provenance</h4>
+          <p class="small muted">${esc(req.provenance_note)}</p>` : ''}`;
+    });
+
+    $('[data-close-detail]').addEventListener('click', () => { $('[data-detail-card]').hidden = true; });
+
+    $('[data-scan-form]').addEventListener('submit', (event) => {
+      event.preventDefault();
+      const form = new FormData(event.currentTarget);
+      scan({
+        standard: String(form.get('standard') || '').trim() || null,
+        asset_tag: String(form.get('asset_tag') || '').trim() || null,
+        years: Number(form.get('years')) || 3,
+      });
+    });
+
+    $('[data-evidence-pack]').addEventListener('click', async () => {
+      const status = $('[data-status]');
+      renderLoading(status, 'Requesting package');
+      try {
+        const response = await fetch('/api/v1/compliance/evidence-package', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ scope: { years: 3 } }),
+        });
+        const body = await response.json();
+        status.innerHTML = renderCapability(body.status);
+      } catch (error) { renderError(status, error); }
+    });
+
+    loadRequirements();
+    scan({ years: 3 });
+  </script>
+</body>
+</html>

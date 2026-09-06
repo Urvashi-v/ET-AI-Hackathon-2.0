@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Reliability · Asset &amp; Operations Brain</title>
+  <link rel="stylesheet" href="css/base.css">
+</head>
+<body>
+  <header class="app-header" data-app-header></header>
+
+  <main class="app-main">
+    <div class="page-head">
+      <div>
+        <p class="eyebrow">Maintenance intelligence</p>
+        <h1>Reliability workbench</h1>
+        <p class="lede">
+          Failure history, computed reliability metrics and structurally-similar historical events.
+          Metrics report <span class="mono">insufficient_data</span> rather than a number when there
+          are too few events to support one.
+        </p>
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom:14px">
+      <div class="card-body">
+        <form class="toolbar" data-rca-form>
+          <label class="field grow" style="margin:0">
+            <span>Asset</span>
+            <input type="text" name="asset_tag" list="asset-list" placeholder="P-101B" required>
+            <datalist id="asset-list"></datalist>
+          </label>
+          <label class="field grow" style="margin:0;flex:2">
+            <span>Failure description</span>
+            <input type="text" name="failure_description" value="High vibration and seal leak" required>
+          </label>
+          <label class="field" style="margin:0;width:160px">
+            <span>Event date</span>
+            <input type="date" name="event_date">
+          </label>
+          <button class="primary" type="submit">Analyse</button>
+        </form>
+      </div>
+    </div>
+
+    <div class="grid sidebar">
+      <div class="stack">
+        <section class="card">
+          <div class="card-head">
+            <h2>Asset dossier</h2>
+            <span data-asset-prov></span>
+          </div>
+          <div class="card-body" data-dossier></div>
+        </section>
+
+        <section class="card">
+          <div class="card-head"><h2>Maintenance history</h2></div>
+          <div class="card-body flush scroll-y h-520" data-history></div>
+        </section>
+
+        <section class="card">
+          <div class="card-head"><h2>Inspection readings</h2></div>
+          <div class="card-body flush" data-inspections></div>
+        </section>
+      </div>
+
+      <div class="stack">
+        <section class="card">
+          <div class="card-head"><h2>Reliability metrics</h2><span class="prov calculated_metric">Calculated</span></div>
+          <div class="card-body" data-metrics></div>
+        </section>
+
+        <section class="card">
+          <div class="card-head"><h2>Causal analysis</h2></div>
+          <div class="card-body" data-rca-status></div>
+        </section>
+
+        <section class="card">
+          <div class="card-head">
+            <h2>Similar historical events</h2>
+            <span class="small dim">explained, not scored blindly</span>
+          </div>
+          <div class="card-body flush scroll-y h-360" data-similar></div>
+        </section>
+
+        <section class="card">
+          <div class="card-head"><h2>Discriminating evidence needed</h2></div>
+          <div class="card-body" data-missing></div>
+        </section>
+      </div>
+    </div>
+  </main>
+
+  <script type="module">
+    import { api } from './js/api.js';
+    import {
+      esc, provBadge, renderLoading, renderError, renderEmpty, renderCapability,
+      mountHeader, mountSystemStatus, wireAssetLinks, fmtDate, fmtNumber, tagChip, qs,
+    } from './js/ui.js';
+
+    mountHeader('reliability.html');
+    mountSystemStatus(api);
+    wireAssetLinks();
+
+    const $ = (sel) => document.querySelector(sel);
+
+    async function loadAssetList() {
+      try {
+        const { items } = await api.assets({ limit: 300 });
+        $('#asset-list').innerHTML = items
+          .map((a) => `<option value="${esc(a.canonical_tag)}">${esc(a.class_label || '')}</option>`).join('');
+        return items;
+      } catch { return []; }
+    }
+
+    async function loadDossier(assetTag) {
+      const node = $('[data-dossier]');
+      renderLoading(node);
+      try {
+        const detail = await api.asset(assetTag);
+        const asset = detail.asset;
+        $('[data-asset-prov]').innerHTML = provBadge(asset.data_class);
+
+        const variants = detail.tag_variants.map((v) => `
+          <tr>
+            <td class="mono">${esc(v.surface_form)}</td>
+            <td class="mono small dim">${esc(v.normalised)}</td>
+            <td class="small">${esc(v.extractor)}</td>
+            <td class="num">${v.resolution_score != null ? Number(v.resolution_score).toFixed(2) : '—'}</td>
+            <td>${v.needs_review ? '<span class="badge warn">review</span>' : `<span class="badge ok">${esc(v.resolution_action || 'resolved')}</span>`}</td>
+          </tr>`).join('');
+
+        node.innerHTML = `
+          <div class="row" style="margin-bottom:10px">
+            <span class="tag" style="font-size:1rem;padding:3px 10px">${esc(asset.canonical_tag)}</span>
+            <span class="badge neutral no-dot">${esc(asset.class_label || asset.tag_kind)}</span>
+            ${asset.functional_location
+              ? `<span class="badge info no-dot" title="The permanent position in the process, distinct from the machine occupying it">FL ${esc(asset.functional_location)}</span>`
+              : ''}
+          </div>
+          <div class="grid cols-3" style="margin-bottom:12px">
+            <div class="metric"><div class="metric-label">Documents</div><div class="metric-value">${asset.document_count}</div></div>
+            <div class="metric"><div class="metric-label">Mentions</div><div class="metric-value">${asset.mention_count}</div></div>
+            <div class="metric"><div class="metric-label">Source systems</div><div class="metric-value">${asset.source_system_count}</div></div>
+          </div>
+
+          ${detail.siblings.length ? `
+            <h4>Siblings</h4>
+            <p class="small muted">Linked, never merged — a suffix mismatch is evidence of a parallel train, not of identity.</p>
+            <div class="row tight" style="margin-bottom:12px">
+              ${detail.siblings.map((s) => `${tagChip(s.canonical_tag)}
+                <span class="small dim" title="${esc(s.reason || '')}">${esc(s.class_label || '')}</span>`).join('')}
+            </div>` : ''}
+
+          <h4>Tag variants that resolved here</h4>
+          <p class="small muted">The same physical asset, as written by every system that mentions it.</p>
+          <div class="table-wrap" style="margin-bottom:12px"><table class="data">
+            <thead><tr><th>Surface form</th><th>Normalised</th><th>Extractor</th><th class="num">Score</th><th>Action</th></tr></thead>
+            <tbody>${variants || '<tr><td colspan="5" class="muted">none</td></tr>'}</tbody></table></div>
+
+          <h4>Documents describing this asset</h4>
+          <div class="table-wrap"><table class="data">
+            <thead><tr><th>Document</th><th>Type</th><th>Source system</th><th>Provenance</th><th class="num">Mentions</th></tr></thead>
+            <tbody>${detail.documents.map((d) => `
+              <tr>
+                <td>${esc(d.title)}</td>
+                <td class="small">${esc(String(d.doc_type).replaceAll('_', ' '))}</td>
+                <td class="small muted">${esc(d.source_system)}</td>
+                <td>${provBadge(d.data_class)}</td>
+                <td class="num">${d.mention_count}</td>
+              </tr>`).join('') || '<tr><td colspan="5" class="muted">none</td></tr>'}</tbody></table></div>`;
+
+        renderHistory(detail.work_orders, detail.incidents);
+        renderInspections(detail.inspections);
+      } catch (error) {
+        renderError(node, error, { title: 'Asset not found' });
+        $('[data-history]').innerHTML = '';
+        $('[data-inspections]').innerHTML = '';
+      }
+    }
+
+    function renderHistory(workOrders, incidents) {
+      const node = $('[data-history]');
+      const events = [
+        ...workOrders.map((w) => ({ ...w, kind: 'work order', date: w.opened_on })),
+        ...incidents.map((i) => ({ ...i, kind: 'incident', date: i.occurred_on })),
+      ].sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')));
+
+      if (!events.length) {
+        renderEmpty(node, {
+          title: 'No maintenance history',
+          body: 'Work orders and incidents appear once a CMMS export or investigation report is ingested.',
+        });
+        return;
+      }
+      node.innerHTML = `<ul class="list">${events.map((e) => `
+        <li>
+          <div class="row" style="justify-content:space-between">
+            <span class="row tight">
+              <span class="badge ${e.kind === 'incident' ? 'danger' : 'neutral'} no-dot">${esc(e.kind)}</span>
+              <strong class="mono small">${esc(e.wo_id || e.incident_id || '')}</strong>
+              ${e.wo_type ? `<span class="small muted">${esc(e.wo_type)}</span>` : ''}
+              ${provBadge(e.data_class)}
+            </span>
+            <span class="ts">${fmtDate(e.date)}</span>
+          </div>
+          <div class="small" style="margin-top:4px;color:var(--fg-1)">${esc(e.description || e.title || '')}</div>
+          ${e.as_found ? `<div class="small" style="margin-top:4px">
+            <span class="dim">as-found:</span> ${esc(e.as_found)}
+            <span class="dim" title="Only the as-found condition is evidence about the failure mechanism.">ⓘ</span></div>` : ''}
+          ${e.root_cause ? `<div class="small" style="margin-top:3px"><span class="dim">root cause:</span> ${esc(e.root_cause)}</div>` : ''}
+          <div class="row tight small dim" style="margin-top:5px">
+            ${e.coded_failure_mode ? `<span class="mono">coded: ${esc(e.coded_failure_mode)}</span>` : ''}
+            ${e.downtime_hours ? `<span class="mono">${e.downtime_hours} h downtime</span>` : ''}
+            ${e.cost ? `<span class="mono">₹${fmtNumber(e.cost)}</span>` : ''}
+            ${e.source_system ? `<span>${esc(e.source_system)}</span>` : ''}
+          </div>
+        </li>`).join('')}</ul>`;
+    }
+
+    function renderInspections(inspections) {
+      const node = $('[data-inspections]');
+      if (!inspections.length) {
+        renderEmpty(node, { title: 'No inspection readings', body: 'Ingest a thickness survey to trend corrosion.' });
+        return;
+      }
+      // Group by CML so a corrosion rate is visible across surveys. The rate is
+      // computed here from the stored readings; nothing is estimated.
+      const byCml = new Map();
+      for (const row of inspections) {
+        if (!byCml.has(row.cml_id)) byCml.set(row.cml_id, []);
+        byCml.get(row.cml_id).push(row);
+      }
+      const rows = [...byCml.entries()].map(([cml, readings]) => {
+        const sorted = readings
+          .filter((r) => r.inspected_on && r.thickness_mm != null)
+          .sort((a, b) => String(a.inspected_on).localeCompare(String(b.inspected_on)));
+        if (sorted.length < 2) {
+          return `<tr><td class="mono">${esc(cml)}</td><td class="num">${sorted[0]?.thickness_mm ?? '—'}</td>
+                  <td class="num">${sorted[0]?.min_required_mm ?? '—'}</td>
+                  <td colspan="2" class="muted small">insufficient_data (${sorted.length} reading)</td></tr>`;
+        }
+        const first = sorted[0];
+        const last = sorted[sorted.length - 1];
+        const years = (new Date(last.inspected_on) - new Date(first.inspected_on)) / (365.25 * 864e5);
+        const rate = years > 0 ? (first.thickness_mm - last.thickness_mm) / years : null;
+        const remaining = rate && rate > 0 ? (last.thickness_mm - last.min_required_mm) / rate : null;
+        const alarm = remaining !== null && remaining < 5;
+        return `<tr>
+          <td class="mono">${esc(cml)}</td>
+          <td class="num">${Number(last.thickness_mm).toFixed(2)}</td>
+          <td class="num">${Number(last.min_required_mm).toFixed(2)}</td>
+          <td class="num">${rate !== null ? rate.toFixed(3) : '—'}</td>
+          <td class="num" ${alarm ? 'style="color:var(--warn)"' : ''}>${remaining !== null ? remaining.toFixed(1) : '—'}</td>
+        </tr>`;
+      }).join('');
+
+      node.innerHTML = `
+        <div class="card-body" style="padding-bottom:0">
+          <p class="small muted">Corrosion rate and remaining life computed from the stored readings
+          (${inspections.length} across ${byCml.size} locations). ${provBadge('calculated_metric')}</p>
+        </div>
+        <div class="table-wrap"><table class="data">
+          <thead><tr><th>CML</th><th class="num">Latest mm</th><th class="num">Min mm</th>
+            <th class="num">mm/yr</th><th class="num">Remaining yr</th></tr></thead>
+          <tbody>${rows}</tbody></table></div>`;
+    }
+
+    async function runRca(payload) {
+      const status = $('[data-rca-status]');
+      const metrics = $('[data-metrics]');
+      const similar = $('[data-similar]');
+      const missing = $('[data-missing]');
+      renderLoading(status, 'Gathering evidence');
+      renderLoading(metrics);
+      renderLoading(similar);
+      missing.innerHTML = '';
+
+      try {
+        const rca = await api.rca(payload);
+
+        status.innerHTML = renderCapability(rca.status) + (rca.duplicate_of_open_capa ? `
+          <div class="capability" style="margin-top:10px;border-color:var(--warn)">
+            <h4><span class="badge warn">Already known</span> Open CAPA on this asset</h4>
+            <p>An approved corrective action already addresses this asset: <code>${esc(rca.duplicate_of_open_capa)}</code>.
+               Proposing a new one would duplicate a decision the plant already made.</p>
+          </div>` : '');
+
+        // Counts and computed metrics are separate fields: a count is always an
+        // integer, a metric carries units and may be null.
+        const entries = [
+          ...Object.entries(rca.evidence_gathered || {}),
+          ...Object.entries(rca.reliability_metrics || {}).filter(([k]) => !k.endsWith('_data_class')),
+        ];
+        metrics.innerHTML = `
+          <dl class="kv">${entries.map(([key, value]) => `
+            <dt>${esc(key.replaceAll('_', ' '))}</dt>
+            <dd class="mono tabular">${value === null ? '<span class="dim">n/a</span>' : esc(String(value))}</dd>`).join('')}
+          </dl>
+          <p class="small muted" style="margin-top:10px">
+            Computed from stored work orders only. An MTBF from fewer than three dated events is
+            decoration, so it is reported as <code>insufficient_data</code> instead.
+          </p>`;
+
+        if (!rca.similar_events?.length) {
+          renderEmpty(similar, {
+            title: 'No structurally similar events',
+            body: 'Similarity is computed from shared failure vocabulary, equipment class and sibling relationships — not from text embeddings.',
+          });
+        } else {
+          similar.innerHTML = `<ul class="list">${rca.similar_events.map((e) => `
+            <li>
+              <div class="row" style="justify-content:space-between">
+                <span class="row tight">
+                  <strong class="mono small">${esc(e.id || '')}</strong>
+                  ${e.asset_tag ? tagChip(e.asset_tag) : ''}
+                  ${provBadge(e.data_class)}
+                </span>
+                <span class="mono small">${Number(e.score).toFixed(2)}</span>
+              </div>
+              <div class="small" style="margin-top:4px;color:var(--fg-1)">${esc(e.summary)}</div>
+              <div class="small dim" style="margin-top:4px"><em>${esc(e.explanation)}</em></div>
+              <div class="ts" style="margin-top:3px">${fmtDate(e.date)}</div>
+            </li>`).join('')}</ul>`;
+        }
+
+        missing.innerHTML = rca.discriminating_evidence_needed?.length
+          ? `<p class="small muted">Naming the gap is itself the recommendation: if the discriminating
+               evidence does not exist, obtaining it is the action.</p>
+             <ul class="list" style="border:1px solid var(--line);border-radius:var(--radius)">
+               ${rca.discriminating_evidence_needed.map((m) => `<li class="small">${esc(m)}</li>`).join('')}</ul>`
+          : '<p class="small muted">The available evidence covers the standard discriminating checks.</p>';
+      } catch (error) {
+        renderError(status, error, { title: 'Analysis failed' });
+        metrics.innerHTML = '';
+        similar.innerHTML = '';
+      }
+    }
+
+    $('[data-rca-form]').addEventListener('submit', (event) => {
+      event.preventDefault();
+      const form = new FormData(event.currentTarget);
+      const assetTag = String(form.get('asset_tag')).trim();
+      loadDossier(assetTag);
+      runRca({
+        asset_tag: assetTag,
+        failure_description: String(form.get('failure_description')),
+        event_date: form.get('event_date') || null,
+      });
+    });
+
+    (async function init() {
+      const assets = await loadAssetList();
+      const requested = qs('asset') || assets[0]?.canonical_tag;
+      if (!requested) {
+        renderEmpty($('[data-dossier]'), {
+          title: 'No assets yet',
+          body: 'Ingest a corpus to populate the entity layer.',
+          action: '<a class="btn primary" href="ingestion.html">Go to ingestion</a>',
+        });
+        return;
+      }
+      document.querySelector('[name="asset_tag"]').value = requested;
+      loadDossier(requested);
+      runRca({ asset_tag: requested, failure_description: 'High vibration and seal leak' });
+    })();
+  </script>
+</body>
+</html>

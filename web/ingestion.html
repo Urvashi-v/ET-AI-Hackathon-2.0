@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Ingestion · Asset &amp; Operations Brain</title>
+  <link rel="stylesheet" href="css/base.css">
+</head>
+<body>
+  <header class="app-header" data-app-header></header>
+
+  <main class="app-main">
+    <div class="page-head">
+      <div>
+        <p class="eyebrow">Write path</p>
+        <h1>Document ingestion</h1>
+        <p class="lede">
+          Classify, parse, chunk, index, extract, resolve and upsert. Each stage reports what it
+          did or why it could not — a stage that needs a provider that is absent says so and names
+          the variable, rather than being skipped quietly.
+        </p>
+      </div>
+    </div>
+
+    <div class="grid sidebar-left">
+      <div class="stack">
+        <section class="card">
+          <div class="card-head"><h2>Submit documents</h2></div>
+          <div class="card-body">
+            <form data-upload-form>
+              <label class="field">
+                <span>Files</span>
+                <input type="file" name="files" multiple required
+                       accept=".pdf,.txt,.md,.csv,.json,.docx,.png,.jpg,.jpeg,.tif,.tiff">
+              </label>
+              <label class="field">
+                <span>Provenance class (required)</span>
+                <select name="data_class" required>
+                  <option value="">Select…</option>
+                  <option value="real_source_document">Real source document</option>
+                  <option value="synthetic_test_data">Synthetic test data</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>Source system</span>
+                <input type="text" name="source_system" value="upload"
+                       placeholder="e.g. sap_pm, sharepoint, cad_vault">
+              </label>
+              <p class="small muted">
+                The source-system label is what makes cross-system linkage measurable. Use the real
+                origin, not a generic value.
+              </p>
+              <button class="primary" type="submit" style="width:100%">Ingest</button>
+            </form>
+            <div class="divider"></div>
+            <h4>Or ingest a server-side path</h4>
+            <p class="small muted">Restricted to <code>data/</code> in the repository.</p>
+            <form data-path-form>
+              <label class="field">
+                <span>Path</span>
+                <input type="text" name="path" value="data/synthetic/generated" required>
+              </label>
+              <label class="field">
+                <span>Provenance class</span>
+                <select name="data_class" required>
+                  <option value="synthetic_test_data">Synthetic test data</option>
+                  <option value="real_source_document">Real source document</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>Source system</span>
+                <input type="text" name="source_system" value="synthetic_cmms">
+              </label>
+              <button type="submit" style="width:100%">Ingest path</button>
+            </form>
+            <div data-submit-result style="margin-top:12px"></div>
+          </div>
+        </section>
+      </div>
+
+      <div class="stack">
+        <!-- The live panel. Every line here is a real event from the pipeline. -->
+        <section class="card">
+          <div class="card-head">
+            <h2>Live pipeline</h2>
+            <span class="row tight">
+              <span class="badge neutral" data-stream-state>connecting</span>
+              <button class="small ghost" data-clear-stream>Clear</button>
+            </span>
+          </div>
+          <div class="card-body flush scroll-y h-360" data-stream></div>
+        </section>
+
+        <section class="card">
+          <div class="card-head">
+            <h2>Jobs</h2>
+            <button class="small" data-refresh-jobs>Refresh</button>
+          </div>
+          <div class="card-body flush" data-jobs></div>
+        </section>
+
+        <section class="card" data-job-detail-card hidden>
+          <div class="card-head">
+            <h2>Job detail <span class="mono small dim" data-job-id></span></h2>
+            <button class="small ghost" data-close-job>Close</button>
+          </div>
+          <div class="card-body" data-job-detail></div>
+        </section>
+      </div>
+    </div>
+  </main>
+
+  <script type="module">
+    import { api, subscribeEvents } from './js/api.js';
+    import {
+      esc, provBadge, renderLoading, renderError, renderEmpty, renderCapability,
+      mountHeader, mountSystemStatus, wireAssetLinks, fmtDateTime, fmtNumber, tagChip,
+    } from './js/ui.js';
+
+    mountHeader('ingestion.html');
+    mountSystemStatus(api);
+    wireAssetLinks();
+
+    const $ = (sel) => document.querySelector(sel);
+    let pollTimer = null;
+
+    // ---------------------------------------------------------------- stream
+    const streamNode = $('[data-stream]');
+    const streamState = $('[data-stream-state]');
+    const lines = [];
+
+    function pushLine(html, tone = '') {
+      lines.unshift(`<li${tone ? ` style="border-left:2px solid ${tone};padding-left:12px"` : ''}>${html}</li>`);
+      if (lines.length > 200) lines.pop();
+      streamNode.innerHTML = `<ul class="list">${lines.join('')}</ul>`;
+    }
+
+    function stamp(event) {
+      const ts = event.ts ? new Date(event.ts * 1000) : new Date();
+      return `<span class="ts">${ts.toISOString().slice(11, 19)}</span>`;
+    }
+
+    subscribeEvents({
+      ready: () => { streamState.textContent = 'live'; streamState.className = 'badge ok'; },
+      'ingest.started': (e) => pushLine(
+        `${stamp(e)} <strong>Job started</strong> <span class="mono small">${esc(e.job_id)}</span>
+         <span class="muted small">${esc(e.file_count)} file(s)</span>`, 'var(--info)'),
+      'ingest.document': (e) => {
+        const badge = { ingested: 'ok', duplicate: 'neutral', failed: 'danger' }[e.status] || 'neutral';
+        const stages = (e.stages || [])
+          .filter((s) => s.state !== 'available')
+          .map((s) => `<span class="badge warn" title="${esc(s.detail || '')}">${esc(s.stage)}: ${esc(s.state)}</span>`)
+          .join(' ');
+        pushLine(`
+          ${stamp(e)} <span class="badge ${badge}">${esc(e.status)}</span>
+          <strong>${esc(e.filename)}</strong>
+          <span class="muted small">${esc(e.doc_type || '')}</span>
+          <div class="small dim" style="margin-top:3px">
+            ${e.chunks} chunks · ${e.mentions} mentions · ${e.assets} new assets · ${e.edges} edges
+          </div>
+          ${stages ? `<div class="row tight" style="margin-top:4px">${stages}</div>` : ''}
+          ${e.error ? `<div class="small" style="color:var(--danger)">${esc(e.error)}</div>` : ''}`);
+      },
+      'graph.changed': (e) => pushLine(`
+        ${stamp(e)} <span class="badge info">graph.changed</span>
+        <strong>${esc(e.title || e.doc_id)}</strong>
+        ${(e.assets || []).length
+          ? `<div class="row tight" style="margin-top:4px">${e.assets.slice(0, 8).map((t) => tagChip(t)).join('')}</div>`
+          : '<div class="small dim" style="margin-top:3px">no assets resolved in this document</div>'}`,
+        'var(--accent-dim)'),
+      'ingest.finished': (e) => {
+        const badge = { succeeded: 'ok', partial: 'warn', failed: 'danger' }[e.status] || 'neutral';
+        pushLine(`${stamp(e)} <span class="badge ${badge}">${esc(e.status)}</span>
+          <strong>Job finished</strong>
+          <span class="small muted">${e.processed} processed · ${e.duplicates} duplicate · ${e.failed} failed · ${e.elapsed_s}s</span>`,
+          'var(--ok)');
+        loadJobs();
+      },
+      error: () => { streamState.textContent = 'reconnecting'; streamState.className = 'badge warn'; },
+    });
+
+    $('[data-clear-stream]').addEventListener('click', () => {
+      lines.length = 0;
+      streamNode.innerHTML = '';
+    });
+
+    // ---------------------------------------------------------------- submit
+    function showSubmit(node, response) {
+      const rows = response.files.map((file) => `
+        <tr>
+          <td>${esc(file.filename)}</td>
+          <td>${file.accepted ? '<span class="badge ok">accepted</span>' : '<span class="badge warn">rejected</span>'}</td>
+          <td class="small muted">${esc(file.reason || '')}</td>
+        </tr>`).join('');
+      node.innerHTML = `
+        <div class="row" style="margin-bottom:8px">
+          <span class="badge ok">${response.accepted} queued</span>
+          ${response.duplicates ? `<span class="badge neutral">${response.duplicates} duplicate</span>` : ''}
+          ${response.rejected ? `<span class="badge warn">${response.rejected} rejected</span>` : ''}
+          <span class="small dim mono">${esc(response.job_id)}</span>
+        </div>
+        <div class="table-wrap"><table class="data"><tbody>${rows}</tbody></table></div>`;
+      openJob(response.job_id);
+      loadJobs();
+    }
+
+    $('[data-upload-form]').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const node = $('[data-submit-result]');
+      const form = event.currentTarget;
+      const data = new FormData(form);
+      if (!data.get('data_class')) {
+        node.innerHTML = '<div class="state error small">Choose a provenance class. It is required.</div>';
+        return;
+      }
+      renderLoading(node, 'Uploading');
+      try {
+        showSubmit(node, await api.ingestUpload(data));
+        form.reset();
+      } catch (error) { renderError(node, error, { title: 'Upload rejected' }); }
+    });
+
+    $('[data-path-form]').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const node = $('[data-submit-result]');
+      const form = new FormData(event.currentTarget);
+      renderLoading(node, 'Submitting');
+      try {
+        showSubmit(node, await api.ingestPaths({
+          source: 'filesystem',
+          paths: [form.get('path')],
+          data_class: form.get('data_class'),
+          source_system: form.get('source_system') || 'filesystem',
+          recursive: true,
+        }));
+      } catch (error) { renderError(node, error, { title: 'Submission rejected' }); }
+    });
+
+    // ------------------------------------------------------------------ jobs
+    async function loadJobs() {
+      const node = $('[data-jobs]');
+      try {
+        const { items, queue_depth } = await api.ingestJobs(15);
+        if (!items.length) {
+          renderEmpty(node, { title: 'No ingestion jobs yet', body: 'Submit documents to create one.' });
+          return;
+        }
+        node.innerHTML = `
+          <div class="table-wrap"><table class="data">
+            <thead><tr><th>Job</th><th>Status</th><th>Source</th><th class="num">Docs</th>
+              <th class="num">Chunks</th><th class="num">Assets</th><th>Created</th></tr></thead>
+            <tbody>${items.map((job) => `
+              <tr class="is-clickable" data-open-job="${esc(job.job_id)}">
+                <td class="mono small">${esc(job.job_id.slice(0, 14))}</td>
+                <td><span class="badge ${
+                  { succeeded: 'ok', partial: 'warn', failed: 'danger', running: 'info', queued: 'neutral' }[job.status] || 'neutral'
+                }">${esc(job.status)}</span></td>
+                <td class="small muted">${esc(job.source_system || job.source)}</td>
+                <td class="num">${job.processed_count}${job.failed_count ? ` <span style="color:var(--danger)">+${job.failed_count}✗</span>` : ''}</td>
+                <td class="num">${fmtNumber(job.chunks_created)}</td>
+                <td class="num">${fmtNumber(job.entities_created)}</td>
+                <td><span class="ts">${fmtDateTime(job.created_at)}</span></td>
+              </tr>`).join('')}</tbody></table></div>
+          <div class="card-body small dim">Queue depth: <span class="mono">${queue_depth}</span></div>`;
+      } catch (error) { renderError(node, error); }
+    }
+
+    document.addEventListener('click', (event) => {
+      const row = event.target.closest('[data-open-job]');
+      if (row) openJob(row.dataset.openJob);
+    });
+    $('[data-refresh-jobs]').addEventListener('click', loadJobs);
+    $('[data-close-job]').addEventListener('click', () => {
+      $('[data-job-detail-card]').hidden = true;
+      clearInterval(pollTimer);
+    });
+
+    async function openJob(jobId) {
+      const card = $('[data-job-detail-card]');
+      const node = $('[data-job-detail]');
+      card.hidden = false;
+      $('[data-job-id]').textContent = jobId;
+      clearInterval(pollTimer);
+
+      const paint = async () => {
+        try {
+          const job = await api.ingestJob(jobId);
+          const stages = job.stage_reports.map((stage) =>
+            renderCapability({
+              capability: `${stage.stage} — ${stage.items} item(s)`,
+              state: stage.state,
+              detail: stage.detail,
+              required_env: stage.required_env,
+            })).join('');
+          const docs = job.documents.length ? `
+            <div class="table-wrap"><table class="data">
+              <thead><tr><th>Document</th><th>Type</th><th>Provenance</th><th class="num">Pages</th><th>Text layer</th></tr></thead>
+              <tbody>${job.documents.map((doc) => `
+                <tr>
+                  <td>${esc(doc.title)}</td>
+                  <td>${esc(String(doc.doc_type).replaceAll('_', ' '))}</td>
+                  <td>${provBadge(doc.data_class)}</td>
+                  <td class="num">${doc.page_count ?? '—'}</td>
+                  <td>${doc.has_text_layer === false
+                        ? '<span class="badge warn">none — OCR needed</span>'
+                        : '<span class="badge ok">present</span>'}</td>
+                </tr>`).join('')}</tbody></table></div>` : '';
+          const reviews = job.review_queue.length ? `
+            <h4 style="margin-top:14px">Review queue (${job.review_queue.length})</h4>
+            <p class="small muted">Ambiguous resolutions are surfaced rather than guessed.</p>
+            <ul class="list" style="border:1px solid var(--line);border-radius:var(--radius)">
+              ${job.review_queue.map((item) => `
+                <li>
+                  <div class="row" style="justify-content:space-between">
+                    <strong class="small">${esc(item.subject)}</strong>
+                    <span class="badge warn">${esc(item.kind)}</span>
+                  </div>
+                  <div class="small muted" style="margin-top:4px">${esc(item.detail?.reason || '')}</div>
+                </li>`).join('')}
+            </ul>` : '';
+
+          node.innerHTML = `
+            <div class="row" style="margin-bottom:10px">
+              <span class="badge ${{ succeeded: 'ok', partial: 'warn', failed: 'danger', running: 'info' }[job.status] || 'neutral'}">${esc(job.status)}</span>
+              ${job.stage ? `<span class="small muted"><span class="spinner"></span> ${esc(job.stage)}</span>` : ''}
+            </div>
+            <div class="grid cols-4" style="margin-bottom:12px">
+              <div class="metric"><div class="metric-label">Chunks</div><div class="metric-value">${fmtNumber(job.chunks_created)}</div></div>
+              <div class="metric"><div class="metric-label">Mentions</div><div class="metric-value">${fmtNumber(job.mentions_created)}</div></div>
+              <div class="metric"><div class="metric-label">New assets</div><div class="metric-value">${fmtNumber(job.entities_created)}</div></div>
+              <div class="metric"><div class="metric-label">Graph edges</div><div class="metric-value">${fmtNumber(job.edges_created)}</div></div>
+            </div>
+            ${docs}
+            <h4 style="margin-top:14px">Stage report</h4>
+            <div class="stack">${stages || '<p class="small muted">No stage report yet.</p>'}</div>
+            ${reviews}
+            ${job.error ? `<div class="state error small" style="margin-top:10px">${esc(job.error)}</div>` : ''}`;
+
+          if (['succeeded', 'failed', 'partial', 'cancelled'].includes(job.status)) {
+            clearInterval(pollTimer);
+          }
+        } catch (error) {
+          renderError(node, error);
+          clearInterval(pollTimer);
+        }
+      };
+      renderLoading(node, 'Loading job');
+      await paint();
+      pollTimer = setInterval(paint, 1500);
+    }
+
+    loadJobs();
+  </script>
+</body>
+</html>

@@ -1,0 +1,39 @@
+# --- secrets ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# --- python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+.coverage.*
+
+# --- data (real source documents are NOT committed; see data/corpus/SOURCES.md) ---
+data/corpus/**/*
+!data/corpus/**/.gitkeep
+!data/corpus/**/README.md
+!data/corpus/SOURCES.md
+!data/corpus/MANIFEST.schema.json
+data/synthetic/generated/
+data/uploads/
+data/blobs/
+
+# --- runtime artefacts ---
+eval/results/*.json
+!eval/results/.gitkeep
+*.log
+.DS_Store
+Thumbs.db
+
+# --- docker volumes bind-mounted locally ---
+.volumes/

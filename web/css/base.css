@@ -1,0 +1,446 @@
+/* =============================================================================
+   Unified Asset & Operations Brain -- design system.
+
+   Dark navy industrial. Restrained accent colours: colour carries meaning here,
+   it is not decoration. Green/amber/red are reserved for confidence and
+   severity, and the provenance badges have their own muted palette so they read
+   as metadata rather than as alarms.
+
+   No framework, no build step. Custom properties do the work a utility class
+   library would otherwise do.
+   ============================================================================= */
+
+:root {
+  /* Surfaces, darkest to lightest */
+  --bg-0: #080c14;
+  --bg-1: #0d131f;
+  --bg-2: #131b2a;
+  --bg-3: #1a2435;
+  --bg-4: #223047;
+
+  /* Lines */
+  --line: #223047;
+  --line-strong: #2e3f5c;
+
+  /* Text */
+  --fg-0: #e8eef7;
+  --fg-1: #a9b8ce;
+  --fg-2: #6f8199;
+  --fg-3: #4a5a72;
+
+  /* Accent: a single instrument cyan. Used for interaction, never for status. */
+  --accent: #35c8d8;
+  --accent-dim: #1c7c88;
+  --accent-bg: rgba(53, 200, 216, 0.12);
+
+  /* Status. These three mean exactly one thing each. */
+  --ok: #3fb96a;
+  --ok-bg: rgba(63, 185, 106, 0.13);
+  --warn: #e0a53a;
+  --warn-bg: rgba(224, 165, 58, 0.13);
+  --danger: #e05a4e;
+  --danger-bg: rgba(224, 90, 78, 0.13);
+  --info: #5b8def;
+  --info-bg: rgba(91, 141, 239, 0.13);
+
+  /* Provenance badge palette -- deliberately muted, so a data-class label never
+     competes with a real alarm for attention. */
+  --prov-real: #6fa8dc;
+  --prov-synthetic: #b07fd0;
+  --prov-model: #d59a6a;
+  --prov-calc: #7fc4a8;
+  --prov-taxonomy: #8b9bb4;
+  --prov-attested: #4fb37a;
+
+  --radius: 4px;
+  --radius-lg: 6px;
+  --mono: ui-monospace, "SF Mono", "Cascadia Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  --sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, system-ui, sans-serif;
+
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 4px 16px rgba(0, 0, 0, 0.25);
+  --header-h: 52px;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html { color-scheme: dark; }
+
+body {
+  margin: 0;
+  background: var(--bg-0);
+  color: var(--fg-0);
+  font-family: var(--sans);
+  font-size: 13.5px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ---------------------------------------------------------------- typography */
+
+h1, h2, h3, h4 { margin: 0; font-weight: 600; letter-spacing: -0.01em; }
+h1 { font-size: 1.35rem; }
+h2 { font-size: 1.05rem; }
+h3 { font-size: 0.92rem; }
+h4 { font-size: 0.82rem; color: var(--fg-1); }
+p { margin: 0 0 0.7em; }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+code, .mono, .tag { font-family: var(--mono); font-size: 0.92em; }
+
+.eyebrow {
+  font-size: 0.66rem;
+  font-weight: 600;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: var(--fg-2);
+}
+.muted { color: var(--fg-2); }
+.dim { color: var(--fg-3); }
+.small { font-size: 0.8rem; }
+.tabular { font-variant-numeric: tabular-nums; }
+
+/* Asset tags are identifiers and must be visually unambiguous: P-101A and
+   P-101B differ by one glyph, so they get a monospace face and a chip. */
+.tag {
+  display: inline-block;
+  padding: 1px 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--bg-3);
+  color: var(--fg-0);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+.tag.is-link { cursor: pointer; }
+.tag.is-link:hover { border-color: var(--accent-dim); color: var(--accent); }
+
+time, .ts { font-family: var(--mono); font-size: 0.82em; color: var(--fg-2); }
+
+/* --------------------------------------------------------------------- shell */
+
+.app-header {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  height: var(--header-h);
+  padding: 0 18px;
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--line);
+}
+
+.brand { display: flex; align-items: center; gap: 9px; flex-shrink: 0; }
+.brand-mark {
+  width: 22px; height: 22px;
+  border: 1.5px solid var(--accent);
+  border-radius: 3px;
+  display: grid; place-items: center;
+  color: var(--accent);
+  font-family: var(--mono); font-size: 11px; font-weight: 700;
+}
+.brand-name { font-weight: 650; font-size: 0.9rem; letter-spacing: -0.01em; }
+.brand-sub { font-size: 0.66rem; color: var(--fg-3); letter-spacing: 0.06em; text-transform: uppercase; }
+
+.app-nav { display: flex; gap: 2px; overflow-x: auto; flex: 1; scrollbar-width: none; }
+.app-nav::-webkit-scrollbar { display: none; }
+.app-nav a {
+  padding: 6px 11px;
+  border-radius: var(--radius);
+  color: var(--fg-1);
+  font-size: 0.82rem;
+  font-weight: 500;
+  white-space: nowrap;
+  text-decoration: none;
+}
+.app-nav a:hover { background: var(--bg-2); color: var(--fg-0); text-decoration: none; }
+.app-nav a[aria-current="page"] { background: var(--accent-bg); color: var(--accent); }
+
+.header-status { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+
+.app-main { padding: 18px; max-width: 1680px; margin: 0 auto; }
+
+.page-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 18px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+.page-head .lede { color: var(--fg-2); max-width: 68ch; margin: 4px 0 0; font-size: 0.85rem; }
+
+/* --------------------------------------------------------------------- cards */
+
+.card {
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+.card + .card { margin-top: 14px; }
+.card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-2);
+}
+.card-head h2, .card-head h3 { font-size: 0.86rem; }
+.card-body { padding: 14px; }
+.card-body.flush { padding: 0; }
+
+.grid { display: grid; gap: 14px; }
+.grid.cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.grid.cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.grid.cols-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.grid.sidebar { grid-template-columns: minmax(0, 1fr) 380px; align-items: start; }
+.grid.sidebar-left { grid-template-columns: 300px minmax(0, 1fr); align-items: start; }
+
+/* -------------------------------------------------------------------- metrics */
+
+.metric { padding: 13px 14px; background: var(--bg-1); border: 1px solid var(--line); border-radius: var(--radius-lg); }
+.metric-label { font-size: 0.68rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--fg-2); }
+.metric-value {
+  font-family: var(--mono);
+  font-size: 1.65rem;
+  font-weight: 600;
+  line-height: 1.15;
+  margin-top: 5px;
+  font-variant-numeric: tabular-nums;
+}
+.metric-value.is-pending { color: var(--fg-3); font-size: 1.05rem; }
+.metric-foot { margin-top: 6px; font-size: 0.72rem; color: var(--fg-3); }
+
+/* --------------------------------------------------------------------- badges */
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 7px;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+  text-transform: uppercase;
+}
+.badge::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+.badge.no-dot::before { display: none; }
+
+.badge.ok      { color: var(--ok);     background: var(--ok-bg);     border-color: rgba(63,185,106,.3); }
+.badge.warn    { color: var(--warn);   background: var(--warn-bg);   border-color: rgba(224,165,58,.3); }
+.badge.danger  { color: var(--danger); background: var(--danger-bg); border-color: rgba(224,90,78,.3); }
+.badge.info    { color: var(--info);   background: var(--info-bg);   border-color: rgba(91,141,239,.3); }
+.badge.neutral { color: var(--fg-2);   background: var(--bg-3);      border-color: var(--line-strong); }
+
+/* Provenance badges. Every displayed operational value carries one. */
+.prov {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 0.63rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  border: 1px solid currentColor;
+  background: var(--bg-2);
+  white-space: nowrap;
+}
+.prov.real_source_document { color: var(--prov-real); }
+.prov.synthetic_test_data  { color: var(--prov-synthetic); }
+.prov.model_derived        { color: var(--prov-model); }
+.prov.calculated_metric    { color: var(--prov-calc); }
+.prov.reference_taxonomy   { color: var(--prov-taxonomy); }
+.prov.human_attested       { color: var(--prov-attested); }
+
+/* Confidence meter -- always visible on an answer, never optional. */
+.confidence { display: flex; align-items: center; gap: 9px; }
+.confidence-bar { position: relative; width: 96px; height: 5px; background: var(--bg-3); border-radius: 3px; overflow: hidden; }
+.confidence-fill { position: absolute; inset: 0 auto 0 0; border-radius: 3px; transition: width .3s ease; }
+.confidence-fill.high { background: var(--ok); }
+.confidence-fill.medium { background: var(--warn); }
+.confidence-fill.low { background: var(--danger); }
+
+/* -------------------------------------------------------------------- tables */
+
+.table-wrap { overflow-x: auto; }
+table.data { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
+table.data th {
+  position: sticky; top: 0;
+  text-align: left;
+  padding: 8px 11px;
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--line-strong);
+  font-size: 0.66rem;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--fg-2);
+  white-space: nowrap;
+}
+table.data td { padding: 8px 11px; border-bottom: 1px solid var(--line); vertical-align: top; }
+table.data tbody tr:hover { background: var(--bg-2); }
+table.data td.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; }
+table.data tr.is-clickable { cursor: pointer; }
+
+/* ------------------------------------------------------------------- controls */
+
+button, .btn {
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 550;
+  padding: 6px 13px;
+  border-radius: var(--radius);
+  border: 1px solid var(--line-strong);
+  background: var(--bg-3);
+  color: var(--fg-0);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+button:hover, .btn:hover { background: var(--bg-4); text-decoration: none; }
+button:disabled { opacity: 0.45; cursor: not-allowed; }
+button.primary { background: var(--accent-dim); border-color: var(--accent-dim); color: #06222a; font-weight: 650; }
+button.primary:hover { background: var(--accent); border-color: var(--accent); }
+button.ghost { background: transparent; }
+button.small { padding: 3px 9px; font-size: 0.74rem; }
+
+input[type="text"], input[type="search"], input[type="number"], select, textarea {
+  font: inherit;
+  font-size: 0.85rem;
+  width: 100%;
+  padding: 7px 10px;
+  border-radius: var(--radius);
+  border: 1px solid var(--line-strong);
+  background: var(--bg-0);
+  color: var(--fg-0);
+}
+input:focus, select:focus, textarea:focus, button:focus-visible, a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+textarea { resize: vertical; min-height: 66px; font-family: inherit; }
+label.field { display: block; margin-bottom: 10px; }
+label.field > span { display: block; font-size: 0.7rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--fg-2); margin-bottom: 4px; }
+
+.toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.toolbar .grow { flex: 1; min-width: 180px; }
+
+/* ------------------------------------------------------- loading / empty / error
+   Three distinct states, because "nothing here" and "it broke" and "still
+   working" must never look alike. */
+
+.state { padding: 26px 18px; text-align: center; color: var(--fg-2); }
+.state h3 { color: var(--fg-1); margin-bottom: 5px; font-size: 0.9rem; }
+.state p { max-width: 56ch; margin: 0 auto 0.6em; font-size: 0.83rem; }
+.state.error { color: var(--danger); }
+.state.error h3 { color: var(--danger); }
+.state pre { text-align: left; margin: 10px auto 0; max-width: 620px; }
+
+.spinner {
+  width: 15px; height: 15px;
+  border: 2px solid var(--line-strong);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  display: inline-block;
+  animation: spin .7s linear infinite;
+  vertical-align: -2px;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.skeleton {
+  background: linear-gradient(90deg, var(--bg-2) 25%, var(--bg-3) 50%, var(--bg-2) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.3s infinite;
+  border-radius: var(--radius);
+  height: 13px;
+}
+@keyframes shimmer { to { background-position: -200% 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .spinner, .skeleton { animation: none; }
+}
+
+/* A capability that is not configured is a first-class UI state: it explains
+   what is missing and what would enable it. It is never styled as an error. */
+.capability {
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-lg);
+  padding: 12px 14px;
+  background: var(--bg-2);
+}
+.capability h4 { display: flex; align-items: center; gap: 8px; margin-bottom: 5px; }
+.capability p { font-size: 0.82rem; color: var(--fg-1); margin-bottom: 8px; }
+.capability .env {
+  font-family: var(--mono);
+  font-size: 0.74rem;
+  color: var(--warn);
+  background: var(--bg-0);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 6px 9px;
+  display: block;
+  overflow-x: auto;
+}
+
+/* -------------------------------------------------------------------- misc */
+
+pre {
+  margin: 0;
+  padding: 11px;
+  background: var(--bg-0);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow-x: auto;
+  font-family: var(--mono);
+  font-size: 0.76rem;
+  line-height: 1.5;
+  color: var(--fg-1);
+}
+
+.kv { display: grid; grid-template-columns: minmax(120px, auto) 1fr; gap: 5px 14px; font-size: 0.83rem; }
+.kv dt { color: var(--fg-2); }
+.kv dd { margin: 0; }
+
+.stack { display: flex; flex-direction: column; gap: 10px; }
+.row { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+.row.tight { gap: 6px; }
+.spacer { flex: 1; }
+.divider { height: 1px; background: var(--line); margin: 12px 0; }
+
+.list { list-style: none; margin: 0; padding: 0; }
+.list > li { padding: 10px 14px; border-bottom: 1px solid var(--line); }
+.list > li:last-child { border-bottom: 0; }
+
+.scroll-y { overflow-y: auto; }
+.h-260 { max-height: 260px; }
+.h-360 { max-height: 360px; }
+.h-520 { max-height: 520px; }
+
+.sr-only {
+  position: absolute; width: 1px; height: 1px;
+  padding: 0; margin: -1px; overflow: hidden;
+  clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+
+/* ------------------------------------------------------------------ responsive */
+
+@media (max-width: 1180px) {
+  .grid.sidebar, .grid.sidebar-left { grid-template-columns: minmax(0, 1fr); }
+  .grid.cols-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 780px) {
+  .app-main { padding: 12px; }
+  .grid.cols-2, .grid.cols-3, .grid.cols-4 { grid-template-columns: minmax(0, 1fr); }
+  .brand-sub { display: none; }
+  .page-head { flex-direction: column; align-items: flex-start; }
+}

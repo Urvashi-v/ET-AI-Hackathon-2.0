@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://industrial-brain.local/schemas/corpus-manifest.json",
+  "title": "Real corpus manifest",
+  "description": "Provenance record for every real source document placed under data/corpus/. Required so that the question 'is this real data?' always has a precise answer.",
+  "type": "object",
+  "required": ["documents"],
+  "properties": {
+    "documents": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["filename", "doc_class", "origin", "licence", "contains_personal_data"],
+        "additionalProperties": false,
+        "properties": {
+          "filename":   {"type": "string", "minLength": 1},
+          "doc_class":  {"type": "string", "enum": ["pid", "work_orders", "sops", "inspections", "incidents", "regulation", "datasheet", "manual", "moc"]},
+          "origin":     {"type": "string", "description": "URL or provenance statement, with the retrieval date"},
+          "licence":    {"type": "string", "description": "Licence or permission under which this file may be used"},
+          "contains_personal_data": {"type": "boolean"},
+          "redaction_applied":      {"type": ["string", "null"], "description": "What was redacted, or null if nothing was"},
+          "sha256":     {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+          "notes":      {"type": ["string", "null"]}
+        }
+      }
+    }
+  }
+}

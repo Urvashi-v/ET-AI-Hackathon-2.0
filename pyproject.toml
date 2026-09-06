@@ -1,0 +1,39 @@
+[project]
+name = "industrial-brain"
+version = "0.1.0"
+description = "Unified Asset & Operations Brain -- industrial knowledge substrate"
+requires-python = ">=3.11"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+exclude = [".venv", "data", "eval/results"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM"]
+ignore = ["E501", "B008"]
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+warn_unused_ignores = false
+disallow_untyped_defs = false
+exclude = ["data/", "eval/results/"]
+
+# redis-py 5.x ships inline types whose command signatures are declared as
+# `Awaitable[T] | T`, because the sync and async clients share one class body.
+# Every `await client.lpush(...)` therefore looks like awaiting a possible int.
+# The calls are correct -- this module only ever holds an async client -- so the
+# `misc` code is disabled here rather than casting every call site.
+[[tool.mypy.overrides]]
+module = "services.common.bus"
+disable_error_code = ["misc"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+markers = [
+  "integration: requires a live docker-compose stack (postgres/neo4j/redis)",
+]
+filterwarnings = ["ignore::DeprecationWarning"]

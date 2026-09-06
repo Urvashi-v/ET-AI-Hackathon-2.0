@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Copilot · Asset &amp; Operations Brain</title>
+  <link rel="stylesheet" href="css/base.css">
+</head>
+<body>
+  <header class="app-header" data-app-header></header>
+
+  <main class="app-main">
+    <div class="page-head">
+      <div>
+        <p class="eyebrow">Read path</p>
+        <h1>Expert knowledge copilot</h1>
+        <p class="lede">
+          Intent classification, then lexical, dense and graph retrieval in parallel, fused by
+          reciprocal rank, bound to citations and scored for confidence. Every stage reports
+          whether it ran. The system abstains rather than guessing.
+        </p>
+      </div>
+    </div>
+
+    <div class="grid sidebar">
+      <div class="stack">
+        <section class="card">
+          <div class="card-body">
+            <form data-ask-form>
+              <label class="field">
+                <span>Question</span>
+                <textarea name="question" required rows="2"
+                          placeholder="Why does P-101B keep failing on the seal?"></textarea>
+              </label>
+              <div class="grid cols-4" style="gap:10px">
+                <label class="field" style="margin:0">
+                  <span>Role</span>
+                  <select name="role">
+                    <option value="field_technician">Field technician</option>
+                    <option value="reliability_engineer">Reliability engineer</option>
+                    <option value="operations_shift">Operations / shift</option>
+                    <option value="hse_officer">HSE officer</option>
+                  </select>
+                </label>
+                <label class="field" style="margin:0">
+                  <span>Asset context</span>
+                  <input type="text" name="asset_tag" placeholder="P-101B">
+                </label>
+                <label class="field" style="margin:0">
+                  <span>Work order</span>
+                  <input type="text" name="work_order" placeholder="WO-4471">
+                </label>
+                <label class="field" style="margin:0">
+                  <span>Retrieval</span>
+                  <select name="mode">
+                    <option value="auto">All strategies</option>
+                    <option value="lexical_only">Lexical only</option>
+                    <option value="graph_only">Graph only</option>
+                  </select>
+                </label>
+              </div>
+              <div class="toolbar" style="margin-top:8px">
+                <button class="primary" type="submit">Ask</button>
+                <button type="button" class="ghost" data-stop hidden>Stop</button>
+                <span class="spacer"></span>
+                <span class="small dim" data-latency></span>
+              </div>
+            </form>
+            <div class="row tight" style="margin-top:10px" data-examples></div>
+          </div>
+        </section>
+
+        <!-- Progress is streamed from the pipeline, not simulated on a timer. -->
+        <section class="card" data-progress-card hidden>
+          <div class="card-head"><h2>Pipeline</h2></div>
+          <div class="card-body flush" data-progress></div>
+        </section>
+
+        <section class="card" data-answer-card hidden>
+          <div class="card-head">
+            <h2>Answer</h2>
+            <span data-answer-prov></span>
+          </div>
+          <div class="card-body" data-answer></div>
+        </section>
+
+        <section class="card" data-citations-card hidden>
+          <div class="card-head">
+            <h2>Evidence</h2>
+            <span class="small dim" data-citation-count></span>
+          </div>
+          <div class="card-body flush" data-citations></div>
+        </section>
+
+        <section class="card" data-facts-card hidden>
+          <div class="card-head">
+            <h2>Knowledge graph facts</h2>
+            <span class="small dim">Traversed, not retrieved by similarity</span>
+          </div>
+          <div class="card-body flush scroll-y h-360" data-facts></div>
+        </section>
+      </div>
+
+      <div class="stack">
+        <section class="card" data-confidence-card hidden>
+          <div class="card-head"><h2>Confidence</h2></div>
+          <div class="card-body" data-confidence></div>
+        </section>
+
+        <section class="card" data-referral-card hidden>
+          <div class="card-head"><h2>Referral</h2></div>
+          <div class="card-body" data-referral></div>
+        </section>
+
+        <section class="card" data-actions-card hidden>
+          <div class="card-head"><h2>Next actions</h2></div>
+          <div class="card-body stack" data-actions></div>
+        </section>
+
+        <section class="card">
+          <div class="card-head"><h2>Retrieval subsystem</h2></div>
+          <div class="card-body stack" data-retrieval-health></div>
+        </section>
+      </div>
+    </div>
+  </main>
+
+  <script type="module">
+    import { api, streamQuery } from './js/api.js';
+    import {
+      esc, provBadge, renderLoading, renderError, renderEmpty, renderCapability,
+      renderConfidence, mountHeader, mountSystemStatus, wireAssetLinks, tagChip, docTypeChip,
+    } from './js/ui.js';
+
+    mountHeader('copilot.html');
+    mountSystemStatus(api);
+    wireAssetLinks();
+
+    const $ = (sel) => document.querySelector(sel);
+    let controller = null;
+    let currentQueryId = null;
+
+    const EXAMPLES = [
+      'Why does P-101B keep failing on the seal?',
+      'What are the steps to safely isolate P-101B?',
+      'How many seal failures were there on the crude charge pumps?',
+      'What is the spare for P-101B?',
+      'What is the vibration alarm setpoint for P-999Z?',
+    ];
+    $('[data-examples]').innerHTML = EXAMPLES
+      .map((q) => `<button type="button" class="small ghost" data-example="${esc(q)}">${esc(q)}</button>`)
+      .join('');
+    $('[data-examples]').addEventListener('click', (event) => {
+      const button = event.target.closest('[data-example]');
+      if (!button) return;
+      document.querySelector('[name="question"]').value = button.dataset.example;
+    });
+
+    function show(selector, visible = true) { $(selector).hidden = !visible; }
+
+    // ------------------------------------------------------------- progress
+    const progressNode = $('[data-progress]');
+    const steps = [];
+    function pushStep(html) {
+      steps.push(`<li>${html}</li>`);
+      progressNode.innerHTML = `<ul class="list">${steps.join('')}</ul>`;
+    }
+
+    $('[data-ask-form]').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const form = new FormData(event.currentTarget);
+      const question = String(form.get('question') || '').trim();
+      if (!question) return;
+
+      controller?.abort();
+      controller = new AbortController();
+      steps.length = 0;
+      progressNode.innerHTML = '';
+      currentQueryId = null;
+
+      show('[data-progress-card]');
+      show('[data-answer-card]', false);
+      show('[data-citations-card]', false);
+      show('[data-facts-card]', false);
+      show('[data-confidence-card]', false);
+      show('[data-referral-card]', false);
+      show('[data-actions-card]', false);
+      $('[data-stop]').hidden = false;
+      $('[data-latency]').textContent = '';
+
+      const payload = {
+        question,
+        mode: form.get('mode') || 'auto',
+        user_ctx: {
+          role: form.get('role') || null,
+          asset_tag: String(form.get('asset_tag') || '').trim() || null,
+          work_order: String(form.get('work_order') || '').trim() || null,
+        },
+      };
+
+      const citations = [];
+      const facts = [];
+
+      try {
+        await streamQuery(payload, {
+          stage: (e) => pushStep(`<span class="spinner"></span> <span class="small">${esc(e.message)}…</span>`),
+          intent: (e) => pushStep(`
+            <div class="row" style="justify-content:space-between">
+              <span><strong>Intent</strong> <span class="badge info">${esc(e.intent)}</span></span>
+              <span class="mono small">${(e.confidence * 100).toFixed(0)}%</span>
+            </div>
+            <div class="small dim" style="margin-top:3px">${esc(e.method)}</div>
+            ${e.entities?.length ? `<div class="row tight" style="margin-top:5px">
+              ${e.entities.map((x) => tagChip(x.canonical_tag)).join('')}
+              <span class="small dim">resolved via ${esc(e.entities[0].method)}</span></div>` : ''}`),
+          retrieval: (e) => {
+            const badge = {
+              available: 'ok', provider_not_configured: 'warn',
+              disabled: 'neutral', error: 'danger', not_implemented: 'info',
+            }[e.state] || 'neutral';
+            pushStep(`
+              <div class="row" style="justify-content:space-between">
+                <span><strong>${esc(e.strategy)}</strong> <span class="badge ${badge}">${esc(e.state)}</span></span>
+                <span class="mono small">${e.candidates} cand · ${Number(e.elapsed_ms).toFixed(0)}ms</span>
+              </div>
+              ${e.detail ? `<div class="small dim" style="margin-top:3px">${esc(e.detail)}</div>` : ''}
+              ${e.required_env?.length ? `<div class="small mono" style="color:var(--warn);margin-top:3px">${esc(e.required_env.join(', '))}</div>` : ''}`);
+          },
+          graph_fact: (e) => facts.push(e),
+          citation: (e) => citations.push(e),
+          answer: (e) => {
+            show('[data-answer-card]');
+            $('[data-answer-prov]').innerHTML = provBadge('model_derived');
+            $('[data-answer]').innerHTML = `<div style="white-space:pre-wrap">${esc(e.text)}</div>`;
+          },
+          generation: (e) => {
+            if (e.state !== 'available') {
+              show('[data-answer-card]');
+              $('[data-answer-prov]').innerHTML = '';
+              $('[data-answer]').innerHTML = renderCapability(e);
+            }
+          },
+          confidence: (e) => {
+            show('[data-confidence-card]');
+            $('[data-confidence]').innerHTML = renderConfidence(e);
+          },
+          referral: (e) => {
+            show('[data-referral-card]');
+            $('[data-referral]').innerHTML = `
+              <p class="small">${esc(e.reason)}</p>
+              <dl class="kv">
+                <dt>Expected source</dt><dd>${esc(e.expected_document)}</dd>
+                <dt>Owning role</dt><dd>${esc(e.owner_role)}</dd>
+                <dt>Next step</dt><dd>${esc(e.next_step)}</dd>
+              </dl>`;
+          },
+          actions: (e) => {
+            if (!e.actions?.length) return;
+            show('[data-actions-card]');
+            $('[data-actions]').innerHTML = e.actions.map((action) =>
+              `<button class="small" data-action="${esc(action.action_type)}"
+                 data-payload="${esc(JSON.stringify(action.payload))}">${esc(action.label)}</button>`).join('');
+          },
+          error: (e) => pushStep(`<span class="badge danger">error</span> <span class="small">${esc(e.message)}</span>`),
+          done: (e) => {
+            currentQueryId = e.query_id;
+            $('[data-latency]').textContent = `${e.latency_ms} ms · ${e.query_id}`;
+            renderCitations(citations);
+            renderFacts(facts);
+          },
+        }, { signal: controller.signal });
+      } catch (error) {
+        if (error.name !== 'AbortError') {
+          show('[data-answer-card]');
+          renderError($('[data-answer]'), error, { title: 'Query failed' });
+        }
+      } finally {
+        $('[data-stop]').hidden = true;
+      }
+    });
+
+    $('[data-stop]').addEventListener('click', () => controller?.abort());
+
+    function renderCitations(citations) {
+      const node = $('[data-citations]');
+      show('[data-citations-card]');
+      $('[data-citation-count]').textContent = `${citations.length} passage(s)`;
+      if (!citations.length) {
+        renderEmpty(node, {
+          title: 'No supporting evidence found',
+          body: 'Retrieval returned nothing above threshold for this question.',
+        });
+        return;
+      }
+      node.innerHTML = `<ul class="list">${citations.map((c) => `
+        <li>
+          <div class="row" style="justify-content:space-between">
+            <span class="row tight">
+              <span class="badge neutral no-dot mono">${esc(c.marker)}</span>
+              <strong class="small">${esc(c.doc_title)}</strong>
+              ${docTypeChip(c.doc_type)}
+              ${provBadge(c.data_class)}
+            </span>
+            <span class="small dim mono">${esc(c.retriever)} · ${Number(c.score).toFixed(4)}</span>
+          </div>
+          <div class="small dim" style="margin-top:3px">
+            ${c.page ? `page ${c.page} · ` : ''}${esc(c.section_path || '')}
+            ${c.quote_verified ? '<span class="badge ok" style="margin-left:6px">cited in answer</span>' : ''}
+          </div>
+          <p class="small" style="margin:6px 0 0;color:var(--fg-1)">${esc(c.snippet)}</p>
+        </li>`).join('')}</ul>`;
+    }
+
+    function renderFacts(facts) {
+      const node = $('[data-facts]');
+      if (!facts.length) { show('[data-facts-card]', false); return; }
+      show('[data-facts-card]');
+      node.innerHTML = `<ul class="list">${facts.map((f) => `
+        <li>
+          <div class="small mono" style="line-height:1.7">
+            <span style="color:var(--fg-0)">${esc(f.subject)}</span>
+            <span style="color:var(--accent)"> --[${esc(f.predicate)}]--&gt; </span>
+            <span style="color:var(--fg-0)">${esc(f.object)}</span>
+          </div>
+          <div class="row tight small dim" style="margin-top:4px">
+            ${provBadge(f.data_class)}
+            ${f.confidence != null ? `<span class="mono">conf ${Number(f.confidence).toFixed(2)}</span>` : ''}
+            ${f.evidence_chunk_ids?.length ? `<span class="mono">${f.evidence_chunk_ids.length} evidence chunk(s)</span>` : ''}
+          </div>
+        </li>`).join('')}</ul>`;
+    }
+
+    // Feedback: a thumbs-down asks what was wrong, because each reason routes
+    // somewhere different.
+    document.addEventListener('click', async (event) => {
+      const button = event.target.closest('[data-action="feedback"]');
+      if (!button || !currentQueryId) return;
+      const reason = window.prompt(
+        'What was wrong? (wrong_source | outdated | incomplete | wrong_asset | other)', 'incomplete');
+      if (!reason) return;
+      try {
+        await api.feedback({ query_id: currentQueryId, verdict: 'down', reason, submitted_by: 'web' });
+        button.textContent = 'Feedback recorded';
+        button.disabled = true;
+      } catch (error) {
+        button.textContent = `Failed: ${error.message}`;
+      }
+    });
+
+    document.addEventListener('click', (event) => {
+      const button = event.target.closest('[data-action="open_graph"], [data-action="open_rca"]');
+      if (!button) return;
+      const payload = JSON.parse(button.dataset.payload || '{}');
+      const page = button.dataset.action === 'open_graph' ? 'graph.html' : 'reliability.html';
+      window.location.href = `${page}?asset=${encodeURIComponent(payload.asset_tag || '')}`;
+    });
+
+    (async function loadRetrievalHealth() {
+      const node = $('[data-retrieval-health]');
+      renderLoading(node);
+      try {
+        const health = await api.queryHealth();
+        node.innerHTML = `
+          <div class="capability">
+            <h4><span class="badge ok">Available</span> Lexical (BM25)</h4>
+            <p class="small mono dim">${health.lexical.chunk_count} chunks indexed · avg ${health.lexical.avgdl} tokens</p>
+          </div>
+          ${renderCapability({
+            capability: 'Dense retrieval (pgvector)',
+            state: health.dense.state,
+            detail: health.dense.detail,
+            required_env: health.dense.required_env,
+          })}
+          ${renderCapability(health.generation)}
+          <div class="capability">
+            <h4>Supported intents</h4>
+            <div class="row tight">${health.intents.map((i) => `<span class="badge neutral no-dot">${esc(i)}</span>`).join('')}</div>
+          </div>`;
+      } catch (error) { renderError(node, error); }
+    })();
+  </script>
+</body>
+</html>

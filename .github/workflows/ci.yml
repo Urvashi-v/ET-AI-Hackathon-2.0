@@ -1,0 +1,118 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Fast gate: everything that needs no database. Runs in seconds and catches
+  # the majority of regressions, including the entity-resolution rules that
+  # silently corrupt the graph when they break.
+  static:
+    name: Lint, types, unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Install
+        run: pip install -r requirements-dev.txt
+
+      - name: Ruff (lint)
+        run: python -m ruff check services eval tests data scripts
+
+      - name: Ruff (format)
+        run: python -m ruff format --check services eval tests data scripts
+
+      - name: mypy
+        run: python -m mypy services
+
+      - name: Unit tests
+        run: python -m pytest -q -m "not integration"
+
+      - name: Synthetic corpus is deterministic
+        run: |
+          python data/synthetic/generate.py --out /tmp/a
+          python data/synthetic/generate.py --out /tmp/b
+          diff -r /tmp/a /tmp/b
+
+      - name: Requirement provenance is valid
+        run: python scripts/load_requirements.py --dry-run
+
+  # Full gate: brings the real stack up, ingests the real corpus through the
+  # real API, and runs the API contract tests and the evaluation harness.
+  integration:
+    name: Stack, ingestion, API contracts, evaluation
+    runs-on: ubuntu-latest
+    needs: static
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Install
+        run: pip install -r requirements-dev.txt
+
+      - name: Configure environment
+        run: |
+          cp .env.example .env
+          # Generated, not defaults. These never leave the CI runner.
+          sed -i "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=$(openssl rand -hex 16)/" .env
+          sed -i "s/^NEO4J_PASSWORD=.*/NEO4J_PASSWORD=$(openssl rand -hex 16)/" .env
+
+      - name: Start the stack
+        run: docker compose up -d --build --wait --wait-timeout 300
+
+      - name: Report service health
+        run: |
+          docker compose ps
+          curl -fsS localhost:8000/health | python -m json.tool
+
+      - name: Load requirements
+        run: docker compose exec -T api python scripts/load_requirements.py
+
+      - name: Generate and ingest the synthetic corpus
+        run: |
+          python data/synthetic/generate.py
+          python scripts/ingest_dir.py data/synthetic/generated \
+            --data-class synthetic_test_data --wait
+
+      - name: Ingestion is idempotent
+        run: |
+          # Re-submitting the same bytes must accept nothing and change nothing.
+          python scripts/ingest_dir.py data/synthetic/generated \
+            --data-class synthetic_test_data --wait
+
+      - name: API contract tests
+        run: python -m pytest -q -m integration
+
+      - name: Evaluation harness
+        run: python eval/run_eval.py --api http://localhost:8000 --tag ci
+
+      - name: Upload evaluation results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-results
+          path: eval/results/
+          if-no-files-found: warn
+
+      - name: Service logs on failure
+        if: failure()
+        run: docker compose logs --tail=200
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v

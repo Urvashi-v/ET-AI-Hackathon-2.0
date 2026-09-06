@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Field · Asset &amp; Operations Brain</title>
+  <link rel="stylesheet" href="css/base.css">
+  <style>
+    /* Designed for the actual conditions: gloves, noise, bright sun or a dark
+       plant. Large tap targets, high contrast, answer first. */
+    body { font-size: 15px; }
+    .field-shell { max-width: 620px; margin: 0 auto; padding: 12px 12px 96px; }
+    .field-head { display: flex; align-items: center; gap: 10px; padding: 12px 0; }
+    .asset-hero {
+      background: var(--bg-1); border: 1px solid var(--line-strong);
+      border-radius: var(--radius-lg); padding: 14px;
+    }
+    .asset-hero .tag { font-size: 1.5rem; padding: 5px 12px; }
+    .big-input {
+      font-size: 1.05rem; padding: 14px 14px; min-height: 56px;
+      border-radius: var(--radius-lg);
+    }
+    .big-btn {
+      font-size: 1rem; min-height: 54px; padding: 0 20px; width: 100%;
+      border-radius: var(--radius-lg); justify-content: center;
+    }
+    .answer-first {
+      background: var(--bg-2); border-left: 3px solid var(--accent);
+      border-radius: var(--radius); padding: 14px; font-size: 1.02rem; line-height: 1.55;
+    }
+    .evidence-item { padding: 12px 0; border-bottom: 1px solid var(--line); }
+    .evidence-item:last-child { border-bottom: 0; }
+    .chip-row { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px; scrollbar-width: none; }
+    .chip-row::-webkit-scrollbar { display: none; }
+    .chip-row button { min-height: 42px; white-space: nowrap; }
+    .sticky-ask {
+      position: fixed; left: 0; right: 0; bottom: 0; z-index: 30;
+      background: var(--bg-1); border-top: 1px solid var(--line-strong);
+      padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
+    }
+    .sticky-ask form { max-width: 620px; margin: 0 auto; display: flex; gap: 8px; }
+    .sticky-ask input { flex: 1; }
+    @media (min-width: 900px) { .field-shell { padding-bottom: 110px; } }
+  </style>
+</head>
+<body>
+  <div class="field-shell">
+    <div class="field-head">
+      <div class="brand-mark">AB</div>
+      <div style="flex:1">
+        <div style="font-weight:650">Field assistant</div>
+        <div class="small dim">Point of need · <span data-role>field technician</span></div>
+      </div>
+      <a class="btn small" href="index.html">Desk view</a>
+    </div>
+
+    <!-- Asset context: the fastest possible entry is the tag on the nameplate. -->
+    <section class="asset-hero" data-asset-hero>
+      <div class="small dim">Loading asset context…</div>
+    </section>
+
+    <div class="chip-row" style="margin:14px 0" data-quick></div>
+
+    <section data-result></section>
+  </div>
+
+  <div class="sticky-ask">
+    <form data-ask>
+      <input class="big-input" type="text" name="question" required
+             placeholder="Ask about this asset…" autocomplete="off">
+      <button class="primary" type="submit" style="min-height:56px;padding:0 22px">Ask</button>
+    </form>
+  </div>
+
+  <script type="module">
+    import { api, streamQuery } from './js/api.js';
+    import {
+      esc, provBadge, renderError, renderEmpty, renderCapability,
+      confidenceBand, fmtDate, tagChip, qs,
+    } from './js/ui.js';
+
+    const $ = (sel) => document.querySelector(sel);
+    let assetTag = qs('asset');
+
+    const QUICK = [
+      'Why does this keep failing?',
+      'What did we do last time?',
+      'How do I isolate it safely?',
+      'Do I need a permit?',
+      'What is the discharge pressure limit?',
+    ];
+    $('[data-quick]').innerHTML = QUICK
+      .map((q) => `<button class="small" data-q="${esc(q)}">${esc(q)}</button>`).join('');
+    $('[data-quick]').addEventListener('click', (event) => {
+      const button = event.target.closest('[data-q]');
+      if (!button) return;
+      $('[name="question"]').value = button.dataset.q;
+      ask(button.dataset.q);
+    });
+
+    async function loadAsset() {
+      const node = $('[data-asset-hero]');
+      try {
+        if (!assetTag) {
+          const { items } = await api.assets({ limit: 1 });
+          assetTag = items[0]?.canonical_tag;
+        }
+        if (!assetTag) {
+          renderEmpty(node, {
+            title: 'No asset context',
+            body: 'Nothing has been ingested yet, so there is no asset to work on.',
+          });
+          return;
+        }
+        const detail = await api.asset(assetTag);
+        const asset = detail.asset;
+        const lastEvent = [...detail.work_orders, ...detail.incidents]
+          .sort((a, b) => String(b.opened_on || b.occurred_on || '').localeCompare(
+            String(a.opened_on || a.occurred_on || '')))[0];
+
+        node.innerHTML = `
+          <div class="row" style="justify-content:space-between">
+            <span class="tag">${esc(asset.canonical_tag)}</span>
+            ${provBadge(asset.data_class)}
+          </div>
+          <div style="margin-top:8px;color:var(--fg-1)">${esc(asset.class_label || asset.tag_kind)}</div>
+          ${asset.functional_location
+            ? `<div class="small dim" style="margin-top:3px">Position ${esc(asset.functional_location)}</div>` : ''}
+          <div class="row" style="margin-top:12px;gap:14px">
+            <div><div class="small dim">Work orders</div><div class="mono" style="font-size:1.2rem">${detail.work_orders.length}</div></div>
+            <div><div class="small dim">Incidents</div><div class="mono" style="font-size:1.2rem">${detail.incidents.length}</div></div>
+            <div><div class="small dim">Documents</div><div class="mono" style="font-size:1.2rem">${asset.document_count}</div></div>
+          </div>
+          ${detail.siblings.length ? `
+            <div style="margin-top:12px">
+              <div class="small dim">Standby / parallel train</div>
+              <div class="row tight" style="margin-top:5px">
+                ${detail.siblings.map((s) => `<a class="tag" href="field.html?asset=${encodeURIComponent(s.canonical_tag)}">${esc(s.canonical_tag)}</a>`).join('')}
+              </div>
+            </div>` : ''}
+          ${lastEvent ? `
+            <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--line)">
+              <div class="small dim">Last recorded event · ${fmtDate(lastEvent.opened_on || lastEvent.occurred_on)}</div>
+              <div style="margin-top:4px">${esc(lastEvent.description || lastEvent.title || '')}</div>
+              ${lastEvent.as_found ? `<div class="small" style="margin-top:5px"><span class="dim">as-found:</span> ${esc(lastEvent.as_found)}</div>` : ''}
+            </div>` : ''}`;
+
+        loadNotifications();
+      } catch (error) {
+        renderError(node, error, { title: 'Cannot load asset' });
+      }
+    }
+
+    async function loadNotifications() {
+      try {
+        const data = await api.notifications({ asset_tag: assetTag, limit: 5 });
+        if (!data.items.length) return;
+        const banner = document.createElement('section');
+        banner.style.marginTop = '12px';
+        banner.innerHTML = data.items.map((n) => `
+          <div class="capability" style="border-color:var(--warn);border-style:solid">
+            <h4><span class="badge warn">${esc(n.severity)}</span> ${esc(n.title)}</h4>
+            <p>${esc(n.message)}</p>
+            <p class="small dim">${esc(n.reason)}</p>
+          </div>`).join('');
+        $('[data-asset-hero]').after(banner);
+      } catch { /* the panel is optional; its absence must not break the page */ }
+    }
+
+    async function ask(question) {
+      const node = $('[data-result]');
+      node.innerHTML = `
+        <div class="card"><div class="card-body">
+          <div class="row"><span class="spinner"></span><span data-progress-text>Understanding the question…</span></div>
+        </div></div>`;
+      const progress = node.querySelector('[data-progress-text]');
+      const citations = [];
+
+      try {
+        await streamQuery({
+          question,
+          user_ctx: { role: 'field_technician', asset_tag: assetTag },
+        }, {
+          intent: (e) => { progress.textContent = `Intent: ${e.intent}. Searching…`; },
+          retrieval: (e) => {
+            if (e.state === 'available' && e.candidates) {
+              progress.textContent = `${e.strategy}: found ${e.candidates} candidates…`;
+            }
+          },
+          citation: (e) => citations.push(e),
+          answer: (e) => {
+            node.innerHTML = `<div class="answer-first">${esc(e.text)}</div>` + node.innerHTML;
+          },
+          generation: (e) => {
+            if (e.state !== 'available') {
+              node.dataset.generation = renderCapability(e);
+            }
+          },
+          confidence: (e) => renderResult(node, e, citations),
+          referral: (e) => { node.dataset.referral = JSON.stringify(e); },
+          done: () => { if (!node.querySelector('[data-final]')) renderResult(node, null, citations); },
+        });
+      } catch (error) {
+        renderError(node, error, { title: 'Could not answer' });
+      }
+    }
+
+    function renderResult(node, confidence, citations) {
+      const band = confidence ? confidenceBand(confidence.score) : 'low';
+      const pct = confidence ? Math.round(confidence.score * 100) : 0;
+      const referral = node.dataset.referral ? JSON.parse(node.dataset.referral) : null;
+      const generation = node.dataset.generation || '';
+
+      // Answer first, evidence second, sources third — never a paragraph of
+      // preamble before the number a technician came for.
+      node.innerHTML = `
+        <div data-final>
+          ${generation}
+          ${referral ? `
+            <div class="card" style="margin-top:12px;border-color:var(--warn)">
+              <div class="card-body">
+                <div class="row"><span class="badge warn">Cannot confirm</span></div>
+                <p style="margin-top:8px">${esc(referral.reason)}</p>
+                <dl class="kv small">
+                  <dt>Should be in</dt><dd>${esc(referral.expected_document)}</dd>
+                  <dt>Ask</dt><dd>${esc(referral.owner_role.replaceAll('_', ' '))}</dd>
+                </dl>
+              </div>
+            </div>` : ''}
+
+          ${confidence ? `
+            <div class="card" style="margin-top:12px">
+              <div class="card-body">
+                <div class="row" style="justify-content:space-between">
+                  <span class="small dim">Confidence</span>
+                  <div class="confidence">
+                    <div class="confidence-bar"><div class="confidence-fill ${band}" style="width:${pct}%"></div></div>
+                    <span class="mono">${pct}%</span>
+                  </div>
+                </div>
+                <p class="small muted" style="margin:8px 0 0">${esc(confidence.explanation)}</p>
+              </div>
+            </div>` : ''}
+
+          <div class="card" style="margin-top:12px">
+            <div class="card-head"><h2>Evidence (${citations.length})</h2></div>
+            <div class="card-body">
+              ${citations.length ? citations.map((c) => `
+                <div class="evidence-item">
+                  <div class="row tight">
+                    <span class="badge neutral no-dot mono">${esc(c.marker)}</span>
+                    <strong style="font-size:0.92rem">${esc(c.doc_title)}</strong>
+                  </div>
+                  <div class="row tight small dim" style="margin-top:4px">
+                    ${provBadge(c.data_class)}
+                    <span>${esc(String(c.doc_type).replaceAll('_', ' '))}</span>
+                    ${c.page ? `<span>page ${c.page}</span>` : ''}
+                  </div>
+                  <p class="small" style="margin:8px 0 0;color:var(--fg-1)">${esc(c.snippet.slice(0, 400))}</p>
+                </div>`).join('')
+                : '<p class="small muted">No supporting passages were found for this question.</p>'}
+            </div>
+          </div>
+
+          <div class="row" style="margin-top:12px;gap:8px">
+            <a class="btn big-btn" style="flex:1" href="graph.html?asset=${encodeURIComponent(assetTag || '')}">Show on graph</a>
+            <a class="btn big-btn" style="flex:1" href="reliability.html?asset=${encodeURIComponent(assetTag || '')}">Full history</a>
+          </div>
+        </div>`;
+      delete node.dataset.referral;
+      delete node.dataset.generation;
+    }
+
+    $('[data-ask]').addEventListener('submit', (event) => {
+      event.preventDefault();
+      const question = String(new FormData(event.currentTarget).get('question') || '').trim();
+      if (question) ask(question);
+    });
+
+    loadAsset();
+  </script>
+</body>
+</html>

@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Overview · Asset &amp; Operations Brain</title>
+  <link rel="stylesheet" href="css/base.css">
+</head>
+<body>
+  <header class="app-header" data-app-header></header>
+
+  <main class="app-main">
+    <div class="page-head">
+      <div>
+        <p class="eyebrow">Overview</p>
+        <h1>Knowledge substrate status</h1>
+        <p class="lede">
+          Every number on this page is computed from what has actually been ingested. Nothing is
+          seeded for display, and each value carries a badge saying where it came from.
+        </p>
+      </div>
+      <div class="row">
+        <a class="btn" href="ingestion.html">Ingest documents</a>
+        <a class="btn" href="copilot.html">Ask the copilot</a>
+      </div>
+    </div>
+
+    <!-- Corpus and entity-layer metrics -->
+    <section class="grid cols-4" data-metrics aria-label="Corpus metrics">
+      <div class="metric"><div class="metric-label">Documents</div><div class="metric-value is-pending">—</div></div>
+      <div class="metric"><div class="metric-label">Canonical assets</div><div class="metric-value is-pending">—</div></div>
+      <div class="metric"><div class="metric-label">Mentions resolved</div><div class="metric-value is-pending">—</div></div>
+      <div class="metric"><div class="metric-label">Multi-document assets</div><div class="metric-value is-pending">—</div></div>
+    </section>
+
+    <div class="grid sidebar" style="margin-top:14px">
+      <div class="stack">
+        <!-- The headline claim, stated as a measurable -->
+        <section class="card">
+          <div class="card-head">
+            <h2>Cross-document linkage</h2>
+            <span class="prov calculated_metric">Calculated</span>
+          </div>
+          <div class="card-body" data-linkage></div>
+        </section>
+
+        <section class="card">
+          <div class="card-head">
+            <h2>Corpus by document type</h2>
+            <a class="btn small" href="ingestion.html">Manage</a>
+          </div>
+          <div class="card-body flush" data-corpus></div>
+        </section>
+
+        <section class="card">
+          <div class="card-head"><h2>Most connected assets</h2></div>
+          <div class="card-body flush" data-assets></div>
+        </section>
+      </div>
+
+      <div class="stack">
+        <section class="card" id="system">
+          <div class="card-head">
+            <h2>System</h2>
+            <span class="small dim" data-checked></span>
+          </div>
+          <div class="card-body" data-system></div>
+        </section>
+
+        <section class="card">
+          <div class="card-head"><h2>Capabilities</h2></div>
+          <div class="card-body stack" data-capabilities></div>
+        </section>
+
+        <section class="card">
+          <div class="card-head"><h2>Recent activity</h2></div>
+          <div class="card-body flush scroll-y h-360" data-events></div>
+        </section>
+      </div>
+    </div>
+  </main>
+
+  <script type="module">
+    import { api, ApiError } from './js/api.js';
+    import {
+      esc, provBadge, renderLoading, renderError, renderEmpty, renderCapability,
+      mountHeader, mountSystemStatus, wireAssetLinks, fmtNumber, fmtDateTime, tagChip,
+    } from './js/ui.js';
+
+    mountHeader('index.html');
+    mountSystemStatus(api);
+    wireAssetLinks();
+
+    const $ = (sel) => document.querySelector(sel);
+
+    function metricCard(label, value, foot, dataClass) {
+      const pending = value === null || value === undefined;
+      return `
+        <div class="metric">
+          <div class="metric-label">${esc(label)}</div>
+          <div class="metric-value${pending ? ' is-pending' : ''}">${pending ? 'n/a' : esc(value)}</div>
+          <div class="metric-foot">${foot ? esc(foot) + ' ' : ''}${dataClass ? provBadge(dataClass) : ''}</div>
+        </div>`;
+    }
+
+    async function loadMetrics() {
+      const node = $('[data-metrics]');
+      try {
+        const [stats, jobs] = await Promise.all([api.assetStats(), api.ingestJobs(50)]);
+        const documents = jobs.items.reduce((sum, job) => sum + (job.processed_count || 0), 0);
+        node.innerHTML = [
+          metricCard('Documents ingested', fmtNumber(documents), 'across all jobs', 'calculated_metric'),
+          metricCard('Canonical assets', fmtNumber(stats.total_assets), 'after resolution', 'calculated_metric'),
+          metricCard('Mention resolution', `${stats.mention_resolution_rate_pct}%`,
+                     `${fmtNumber(stats.total_mentions)} mentions`, 'calculated_metric'),
+          metricCard('Multi-document assets', `${stats.multi_document_pct}%`,
+                     `${fmtNumber(stats.multi_document_assets)} of ${fmtNumber(stats.total_assets)}`, 'calculated_metric'),
+        ].join('');
+      } catch (error) {
+        renderError(node, error, { title: 'Metrics unavailable' });
+      }
+    }
+
+    async function loadLinkage() {
+      const node = $('[data-linkage]');
+      renderLoading(node);
+      try {
+        const stats = await api.assetStats();
+        if (!stats.total_assets) {
+          renderEmpty(node, {
+            title: 'No assets yet',
+            body: 'Linkage is measured over resolved entities. Ingest a corpus to populate it.',
+            action: '<a class="btn primary" href="ingestion.html">Go to ingestion</a>',
+          });
+          return;
+        }
+        node.innerHTML = `
+          <p class="small muted">
+            An asset evidenced by more than one document is a concrete case of two records being
+            joined. An asset evidenced by more than one <em>source system</em> is the platform's
+            actual claim: systems that never talked to each other, now connected.
+          </p>
+          <dl class="kv" style="margin-top:12px">
+            <dt>Total canonical assets</dt><dd class="mono tabular">${fmtNumber(stats.total_assets)}</dd>
+            <dt>Evidenced by &gt;1 document</dt>
+            <dd class="mono tabular">${fmtNumber(stats.multi_document_assets)} <span class="muted">(${stats.multi_document_pct}%)</span></dd>
+            <dt>Evidenced by &gt;1 source system</dt>
+            <dd class="mono tabular">${fmtNumber(stats.cross_system_assets)} <span class="muted">(${stats.cross_system_pct}%)</span></dd>
+            <dt>Mentions needing review</dt>
+            <dd class="mono tabular">${fmtNumber(stats.mentions_needing_review)}
+              ${stats.mentions_needing_review ? '<span class="badge warn" style="margin-left:6px">Queued</span>' : ''}</dd>
+          </dl>
+          ${stats.cross_system_assets === 0 ? `
+            <p class="small muted" style="margin-top:10px">
+              Cross-system linkage is zero because everything ingested so far shares one
+              <code>source_system</code> label. Ingest a second source with a different
+              <code>source_system</code> to make this metric meaningful.
+            </p>` : ''}`;
+      } catch (error) {
+        renderError(node, error);
+      }
+    }
+
+    async function loadCorpus() {
+      const node = $('[data-corpus]');
+      renderLoading(node);
+      try {
+        const jobs = await api.ingestJobs(50);
+        const detailed = await Promise.all(
+          jobs.items.slice(0, 12).map((job) => api.ingestJob(job.job_id).catch(() => null)));
+        const byType = new Map();
+        for (const job of detailed) {
+          for (const doc of job?.documents ?? []) {
+            const key = `${doc.doc_type}|${doc.data_class}`;
+            byType.set(key, (byType.get(key) || 0) + 1);
+          }
+        }
+        if (!byType.size) {
+          renderEmpty(node, {
+            title: 'No documents ingested',
+            body: 'The corpus is empty. Submit documents to build the substrate.',
+            action: '<a class="btn primary" href="ingestion.html">Go to ingestion</a>',
+          });
+          return;
+        }
+        const rows = [...byType.entries()]
+          .sort((a, b) => b[1] - a[1])
+          .map(([key, count]) => {
+            const [type, dataClass] = key.split('|');
+            return `<tr>
+              <td>${esc(String(type).replaceAll('_', ' '))}</td>
+              <td>${provBadge(dataClass)}</td>
+              <td class="num">${count}</td></tr>`;
+          }).join('');
+        node.innerHTML = `<div class="table-wrap"><table class="data">
+          <thead><tr><th>Document type</th><th>Provenance</th><th class="num">Count</th></tr></thead>
+          <tbody>${rows}</tbody></table></div>`;
+      } catch (error) {
+        renderError(node, error);
+      }
+    }
+
+    async function loadAssets() {
+      const node = $('[data-assets]');
+      renderLoading(node);
+      try {
+        const { items } = await api.assets({ limit: 10 });
+        if (!items.length) {
+          renderEmpty(node, { title: 'No assets', body: 'Assets appear once a document mentioning them is ingested.' });
+          return;
+        }
+        node.innerHTML = `<div class="table-wrap"><table class="data">
+          <thead><tr><th>Tag</th><th>Class</th><th class="num">Docs</th><th class="num">Mentions</th><th>Provenance</th></tr></thead>
+          <tbody>${items.map((a) => `
+            <tr>
+              <td>${tagChip(a.canonical_tag)}</td>
+              <td class="muted">${esc(a.class_label || a.tag_kind)}</td>
+              <td class="num">${a.document_count}</td>
+              <td class="num">${a.mention_count}</td>
+              <td>${provBadge(a.data_class)}</td>
+            </tr>`).join('')}</tbody></table></div>`;
+      } catch (error) {
+        renderError(node, error);
+      }
+    }
+
+    async function loadSystem() {
+      const node = $('[data-system]');
+      renderLoading(node, 'Probing services');
+      try {
+        const health = await api.health();
+        $('[data-checked]').textContent = fmtDateTime(health.checked_at);
+        const rows = Object.entries(health.dependencies).map(([name, info]) => {
+          const up = info.status === 'up';
+          const badge = up ? 'ok' : (info.status === 'degraded' ? 'warn' : 'danger');
+          const extras = [];
+          if (info.version) extras.push(esc(info.version));
+          if (info.public_tables !== undefined) extras.push(`${info.public_tables} tables`);
+          if (info.nodes !== undefined) extras.push(`${info.nodes} nodes / ${info.relationships} rels`);
+          if (info.constraints !== undefined) extras.push(`${info.constraints} constraints`);
+          if (info.queue_depth !== undefined) extras.push(`queue ${info.queue_depth}`);
+          if (info.extensions?.length) extras.push(info.extensions.join(', '));
+          return `<li>
+            <div class="row" style="justify-content:space-between">
+              <strong>${esc(name)}</strong>
+              <span class="badge ${badge}">${esc(info.status || 'unknown')}</span>
+            </div>
+            ${extras.length ? `<div class="small dim mono" style="margin-top:3px">${esc(extras.join(' · '))}</div>` : ''}
+            ${info.message ? `<div class="small" style="color:var(--danger);margin-top:3px">${esc(info.message)}</div>` : ''}
+          </li>`;
+        }).join('');
+        node.innerHTML = `<ul class="list" style="margin:-14px">${rows}</ul>`;
+      } catch (error) {
+        renderError(node, error, { title: 'Cannot reach the API' });
+      }
+    }
+
+    async function loadCapabilities() {
+      const node = $('[data-capabilities]');
+      renderLoading(node);
+      try {
+        const [health, retrieval] = await Promise.all([api.health(), api.queryHealth()]);
+        const cards = [];
+        for (const [name, info] of Object.entries(health.providers)) {
+          cards.push(renderCapability({
+            capability: `${name} provider (${info.provider})`,
+            state: info.state,
+            detail: info.state === 'disabled'
+              ? 'Disabled by configuration. The stages that depend on it report so rather than substituting output.'
+              : (info.missing_credentials?.length ? 'Selected, but a required credential is missing.' : 'Configured.'),
+            required_env: info.missing_credentials || [],
+          }));
+        }
+        cards.push(renderCapability(retrieval.generation));
+        cards.push(`
+          <div class="capability">
+            <h4><span class="badge ok">Available</span> lexical retrieval</h4>
+            <p>Okapi BM25 over a tag-preserving tokenizer. Requires no credentials.</p>
+            <p class="small mono dim">${retrieval.lexical.chunk_count} chunks · avg length ${retrieval.lexical.avgdl} tokens</p>
+          </div>`);
+        const conn = Object.entries(health.connectors)
+          .map(([k, v]) => `<div class="row small" style="justify-content:space-between">
+            <span class="muted">${esc(k)}</span>
+            <span class="badge ${v === 'available' || v === 'configured' ? 'ok' : 'neutral'}">${esc(v)}</span></div>`)
+          .join('');
+        node.innerHTML = cards.join('') + `
+          <div class="capability"><h4>External connectors</h4>${conn}</div>`;
+      } catch (error) {
+        renderError(node, error);
+      }
+    }
+
+    async function loadEvents() {
+      const node = $('[data-events]');
+      renderLoading(node);
+      try {
+        const { persisted } = await api.events(30);
+        if (!persisted.length) {
+          renderEmpty(node, { title: 'No activity yet', body: 'Events are emitted by real pipeline stages.' });
+          return;
+        }
+        node.innerHTML = `<ul class="list">${persisted.map((event) => `
+          <li>
+            <div class="row" style="justify-content:space-between">
+              <span class="mono small">${esc(event.event_type)}</span>
+              <span class="ts">${fmtDateTime(event.occurred_at)}</span>
+            </div>
+            ${event.payload?.assets?.length
+              ? `<div class="row tight" style="margin-top:5px">${event.payload.assets.slice(0, 6).map((t) => tagChip(t)).join('')}</div>`
+              : ''}
+            ${event.payload?.doc_type
+              ? `<div class="small dim" style="margin-top:3px">${esc(event.payload.doc_type)} · ${esc(event.payload.chunks ?? 0)} chunks</div>`
+              : ''}
+          </li>`).join('')}</ul>`;
+      } catch (error) {
+        renderError(node, error);
+      }
+    }
+
+    loadMetrics(); loadLinkage(); loadCorpus(); loadAssets();
+    loadSystem(); loadCapabilities(); loadEvents();
+  </script>
+</body>
+</html>

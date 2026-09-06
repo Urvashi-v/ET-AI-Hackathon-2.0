@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Knowledge graph · Asset &amp; Operations Brain</title>
+  <link rel="stylesheet" href="css/base.css">
+  <style>
+    .gv-wrap { position: relative; height: 620px; background:
+      radial-gradient(circle at 50% 40%, #0f1725 0%, var(--bg-0) 70%); }
+    .gv-wrap svg { width: 100%; height: 100%; display: block; cursor: grab; touch-action: none; }
+    .gv-wrap svg:active { cursor: grabbing; }
+    .gv-node { cursor: pointer; }
+    .gv-edge { cursor: pointer; }
+    .gv-overlay { position: absolute; left: 12px; bottom: 12px; display: flex; flex-wrap: wrap;
+                  gap: 6px 12px; max-width: 70%; }
+    .gv-key { display: inline-flex; align-items: center; gap: 5px; font-size: 0.7rem; color: var(--fg-2); }
+    .gv-key i { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+    .gv-hint { position: absolute; right: 12px; bottom: 12px; font-size: 0.7rem; color: var(--fg-3); }
+  </style>
+</head>
+<body>
+  <header class="app-header" data-app-header></header>
+
+  <main class="app-main">
+    <div class="page-head">
+      <div>
+        <p class="eyebrow">Knowledge graph</p>
+        <h1>Graph explorer</h1>
+        <p class="lede">
+          Every edge carries its provenance. Click one to open the passages that asserted it —
+          which is what makes "these documents are now connected" checkable rather than claimed.
+        </p>
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom:14px">
+      <div class="card-body">
+        <form class="toolbar" data-graph-form>
+          <label class="field grow" style="margin:0">
+            <span>Asset</span>
+            <input type="text" name="asset" list="asset-list" placeholder="P-101B" required>
+            <datalist id="asset-list"></datalist>
+          </label>
+          <label class="field" style="margin:0;width:110px">
+            <span>Hops</span>
+            <select name="hops"><option>1</option><option selected>2</option><option>3</option></select>
+          </label>
+          <label class="field" style="margin:0;width:150px">
+            <span>As of</span>
+            <input type="date" name="as_of">
+          </label>
+          <label class="field grow" style="margin:0">
+            <span>Edge types (blank = all)</span>
+            <input type="text" name="edges" placeholder="FEEDS,SIBLING_OF,DESCRIBES">
+          </label>
+          <button class="primary" type="submit">Explore</button>
+          <button type="button" class="ghost" data-reset-view>Reset view</button>
+        </form>
+      </div>
+    </div>
+
+    <div class="grid sidebar">
+      <section class="card">
+        <div class="card-head">
+          <h2 data-graph-title>Neighbourhood</h2>
+          <span class="small dim" data-graph-meta></span>
+        </div>
+        <div class="card-body flush">
+          <div class="gv-wrap">
+            <svg data-graph aria-label="Asset knowledge graph"></svg>
+            <div class="gv-overlay" data-legend></div>
+            <div class="gv-hint">drag to pan · scroll to zoom · click a node or edge</div>
+          </div>
+        </div>
+      </section>
+
+      <div class="stack">
+        <section class="card">
+          <div class="card-head"><h2 data-detail-title>Selection</h2></div>
+          <div class="card-body" data-detail>
+            <div class="state"><p class="small">Select a node or an edge to inspect it.</p></div>
+          </div>
+        </section>
+
+        <section class="card">
+          <div class="card-head"><h2>Ontology in this database</h2></div>
+          <div class="card-body flush scroll-y h-360" data-schema></div>
+        </section>
+      </div>
+    </div>
+  </main>
+
+  <script type="module">
+    import { api } from './js/api.js';
+    import {
+      esc, provBadge, renderLoading, renderError, renderEmpty,
+      mountHeader, mountSystemStatus, fmtNumber, qs,
+    } from './js/ui.js';
+    import { GraphView, labelColour, nodeCaption } from './js/graphview.js';
+
+    mountHeader('graph.html');
+    mountSystemStatus(api);
+
+    const $ = (sel) => document.querySelector(sel);
+    const svg = $('[data-graph]');
+    let currentAsset = null;
+
+    const view = new GraphView(svg, {
+      onSelectNode: showNode,
+      onSelectEdge: showEdge,
+    });
+
+    async function loadAssetList() {
+      try {
+        const { items } = await api.assets({ limit: 300 });
+        $('#asset-list').innerHTML = items
+          .map((a) => `<option value="${esc(a.canonical_tag)}">${esc(a.class_label || a.tag_kind)}</option>`)
+          .join('');
+        return items;
+      } catch { return []; }
+    }
+
+    async function explore(assetTag, options = {}) {
+      const meta = $('[data-graph-meta]');
+      const detail = $('[data-detail]');
+      currentAsset = assetTag;
+      meta.innerHTML = '<span class="spinner"></span> loading';
+      detail.innerHTML = '<div class="state"><p class="small">Select a node or an edge to inspect it.</p></div>';
+
+      try {
+        const params = { hops: options.hops || 2, limit: 300 };
+        if (options.edges) params.edges = options.edges;
+        if (options.as_of) params.as_of = options.as_of;
+        const graph = await api.graph(assetTag, params);
+
+        $('[data-graph-title]').textContent = `Neighbourhood of ${graph.anchor}`;
+
+        if (!graph.anchor_found) {
+          svg.innerHTML = '';
+          meta.textContent = '';
+          $('[data-legend]').innerHTML = '';
+          renderEmpty($('[data-detail]'), { title: 'Asset not in the corpus', body: graph.detail || '' });
+          return;
+        }
+        if (!graph.nodes.length) {
+          svg.innerHTML = '';
+          meta.textContent = '0 nodes';
+          renderEmpty($('[data-detail]'), {
+            title: 'No connections at this depth',
+            body: 'The asset exists but has no edges matching the selected types and hop count.',
+          });
+          return;
+        }
+
+        view.setData(graph, graph.anchor);
+        meta.innerHTML = `${fmtNumber(graph.nodes.length)} nodes · ${fmtNumber(graph.edges.length)} edges
+          ${graph.truncated ? '<span class="badge warn" style="margin-left:6px">truncated</span>' : ''}`;
+        $('[data-legend]').innerHTML = view.legend()
+          .map((label) => `<span class="gv-key"><i style="background:${labelColour([label])}"></i>${esc(label)}</span>`)
+          .join('');
+      } catch (error) {
+        renderError($('[data-detail]'), error);
+        meta.textContent = '';
+      }
+    }
+
+    function showNode(node) {
+      $('[data-detail-title]').textContent = (node.labels || []).join(' · ') || 'Node';
+      const props = node.properties || {};
+      const rows = Object.entries(props)
+        .filter(([, value]) => value !== null && value !== '' && value !== undefined)
+        .map(([key, value]) => `<dt>${esc(key)}</dt><dd class="mono small">${esc(
+          Array.isArray(value) ? value.join(', ') : String(value))}</dd>`)
+        .join('');
+      const caption = nodeCaption(node);
+      $('[data-detail]').innerHTML = `
+        <div class="row" style="margin-bottom:10px">
+          <span class="tag">${esc(caption)}</span>
+          ${node.data_class ? provBadge(node.data_class) : ''}
+        </div>
+        <dl class="kv">${rows || '<dt class="muted">no properties</dt><dd></dd>'}</dl>
+        ${(node.labels || []).includes('Equipment')
+          ? `<div class="row" style="margin-top:12px">
+               <button class="small" data-recentre="${esc(caption)}">Centre on this asset</button>
+               <a class="btn small" href="reliability.html?asset=${encodeURIComponent(caption)}">Reliability</a>
+             </div>` : ''}`;
+    }
+
+    async function showEdge(edge) {
+      $('[data-detail-title]').textContent = `Edge · ${edge.type}`;
+      const node = $('[data-detail]');
+      const props = Object.entries(edge.properties || {})
+        .filter(([, v]) => v !== null && v !== '' && v !== undefined)
+        .map(([k, v]) => `<dt>${esc(k)}</dt><dd class="mono small">${esc(String(v))}</dd>`).join('');
+
+      node.innerHTML = `
+        <div class="row" style="margin-bottom:8px">
+          <span class="badge info no-dot">${esc(edge.type)}</span>
+          ${edge.confidence != null ? `<span class="small mono">confidence ${Number(edge.confidence).toFixed(2)}</span>` : ''}
+        </div>
+        <dl class="kv">${props || '<dt class="muted">no properties</dt><dd></dd>'}</dl>
+        <div class="divider"></div>
+        <h4>Evidence</h4>
+        <div data-edge-evidence><span class="spinner"></span> <span class="small">resolving…</span></div>`;
+
+      const target = node.querySelector('[data-edge-evidence]');
+      try {
+        const evidence = await api.edgeEvidence(currentAsset, edge.id);
+        if (!evidence.evidence.length) {
+          target.innerHTML = `<p class="small muted">${esc(evidence.detail)}</p>`;
+          return;
+        }
+        target.innerHTML = evidence.evidence.map((chunk) => `
+          <div style="border:1px solid var(--line);border-radius:var(--radius);padding:9px;margin-bottom:8px">
+            <div class="row tight small">
+              <strong>${esc(chunk.title)}</strong>
+              ${provBadge(chunk.data_class)}
+              ${chunk.page_from ? `<span class="dim">page ${chunk.page_from}</span>` : ''}
+            </div>
+            <p class="small" style="margin:6px 0 0;color:var(--fg-1)">${esc(chunk.text.slice(0, 460))}</p>
+          </div>`).join('');
+      } catch (error) {
+        renderError(target, error, { title: 'Could not resolve evidence' });
+      }
+    }
+
+    document.addEventListener('click', (event) => {
+      const button = event.target.closest('[data-recentre]');
+      if (!button) return;
+      document.querySelector('[name="asset"]').value = button.dataset.recentre;
+      explore(button.dataset.recentre, readOptions());
+    });
+
+    function readOptions() {
+      const form = new FormData($('[data-graph-form]'));
+      return {
+        hops: form.get('hops'),
+        edges: String(form.get('edges') || '').trim(),
+        as_of: form.get('as_of') || '',
+      };
+    }
+
+    $('[data-graph-form]').addEventListener('submit', (event) => {
+      event.preventDefault();
+      const asset = String(new FormData(event.currentTarget).get('asset') || '').trim();
+      if (asset) explore(asset, readOptions());
+    });
+    $('[data-reset-view]').addEventListener('click', () => view.reset());
+
+    (async function loadSchema() {
+      const node = $('[data-schema]');
+      renderLoading(node);
+      try {
+        const schema = await api.graphSchema();
+        node.innerHTML = `
+          <div class="card-body" style="padding-bottom:0">
+            <p class="small muted">Read back from the running database, not from the intended design.</p>
+            ${schema.ontology_version ? `<p class="small dim mono">ontology ${esc(schema.ontology_version.version)}</p>` : ''}
+          </div>
+          <div class="table-wrap"><table class="data">
+            <thead><tr><th>Label</th><th class="num">Nodes</th></tr></thead>
+            <tbody>${schema.node_counts.map((r) =>
+              `<tr><td><span class="gv-key"><i style="background:${labelColour([r.label])}"></i>${esc(r.label)}</span></td>
+                   <td class="num">${fmtNumber(r.n)}</td></tr>`).join('')}</tbody></table></div>
+          <div class="table-wrap"><table class="data">
+            <thead><tr><th>Relationship</th><th class="num">Edges</th></tr></thead>
+            <tbody>${schema.relationship_counts.map((r) =>
+              `<tr><td class="mono small">${esc(r.type)}</td><td class="num">${fmtNumber(r.n)}</td></tr>`).join('')}</tbody></table></div>`;
+      } catch (error) { renderError(node, error); }
+    })();
+
+    (async function init() {
+      const assets = await loadAssetList();
+      const requested = qs('asset') || assets[0]?.canonical_tag;
+      if (requested) {
+        document.querySelector('[name="asset"]').value = requested;
+        explore(requested, { hops: 2 });
+      } else {
+        renderEmpty($('[data-detail]'), {
+          title: 'No assets yet',
+          body: 'Assets appear once a document mentioning them has been ingested.',
+          action: '<a class="btn primary" href="ingestion.html">Go to ingestion</a>',
+        });
+      }
+    })();
+  </script>
+</body>
+</html>

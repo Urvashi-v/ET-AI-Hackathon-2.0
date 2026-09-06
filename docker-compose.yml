@@ -1,0 +1,148 @@
+# Unified Asset & Operations Brain -- local development stack.
+# Five processes only. Every service here has a demonstrated engineering reason;
+# see docs/adr/0001-technology-choices.md.
+name: industrial-brain
+
+services:
+  # ---------------------------------------------------------------------------
+  # Relational store + chunk store + BM25 lexical index + pgvector dense index.
+  # One database rather than adding OpenSearch and Qdrant: see ADR-0001.
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: brain-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-industrial_brain}
+      POSTGRES_USER: ${POSTGRES_USER:-brain}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      - "${POSTGRES_PORT_HOST:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-brain} -d ${POSTGRES_DB:-industrial_brain}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Knowledge graph. Cypher traversal is the read path for multi-hop questions
+  # that no vector index can answer.
+  # ---------------------------------------------------------------------------
+  neo4j:
+    image: neo4j:5.26-community
+    container_name: brain-neo4j
+    environment:
+      NEO4J_AUTH: ${NEO4J_USERNAME:-neo4j}/${NEO4J_PASSWORD:?NEO4J_PASSWORD must be set in .env}
+      NEO4J_server_memory_heap_initial__size: 512m
+      NEO4J_server_memory_heap_max__size: 1G
+      NEO4J_server_memory_pagecache_size: 512m
+      NEO4J_dbms_security_procedures_unrestricted: apoc.*
+      NEO4J_PLUGINS: '["apoc"]'
+    ports:
+      - "${NEO4J_HTTP_PORT_HOST:-7474}:7474"
+      - "${NEO4J_BOLT_PORT_HOST:-7687}:7687"
+    volumes:
+      - neo4jdata:/data
+      - neo4jlogs:/logs
+    healthcheck:
+      # cypher-shell exits non-zero until the database is actually queryable.
+      test: ["CMD-SHELL", "cypher-shell -u ${NEO4J_USERNAME:-neo4j} -p ${NEO4J_PASSWORD} 'RETURN 1' || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 30s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Ingestion queue (reliable BLMOVE-based), event bus for the proactive path,
+  # and query cache.
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7.4-alpine
+    container_name: brain-redis
+    command: ["redis-server", "--appendonly", "yes", "--save", "60", "1"]
+    ports:
+      - "${REDIS_PORT_HOST:-6379}:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # FastAPI application. Also serves the vanilla-JS dashboard from /web so the
+  # frontend talks to a same-origin real API (no CORS shim, no mock server).
+  # ---------------------------------------------------------------------------
+  api:
+    build:
+      context: .
+      dockerfile: services/Dockerfile
+    container_name: brain-api
+    command: ["uvicorn", "services.api.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers"]
+    env_file: [.env]
+    environment:
+      POSTGRES_HOST: postgres
+      NEO4J_URI: bolt://neo4j:7687
+      REDIS_URL: redis://redis:6379/0
+      BLOB_ROOT: /app/data/blobs
+    ports:
+      - "${API_PORT_HOST:-8000}:8000"
+    volumes:
+      - ./services:/app/services:ro
+      - ./web:/app/web:ro
+      - ./database:/app/database:ro
+      - ./scripts:/app/scripts:ro
+      - ./data:/app/data
+      - ./eval:/app/eval
+    depends_on:
+      postgres: {condition: service_healthy}
+      neo4j: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health/live', timeout=5).status==200 else 1)\""]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Background ingestion worker. Separate process so a 400-page scanned P&ID
+  # can never block a query.
+  # ---------------------------------------------------------------------------
+  worker:
+    build:
+      context: .
+      dockerfile: services/Dockerfile
+    container_name: brain-worker
+    command: ["python", "-m", "services.ingest.worker"]
+    env_file: [.env]
+    environment:
+      POSTGRES_HOST: postgres
+      NEO4J_URI: bolt://neo4j:7687
+      REDIS_URL: redis://redis:6379/0
+      BLOB_ROOT: /app/data/blobs
+    volumes:
+      - ./services:/app/services:ro
+      - ./database:/app/database:ro
+      - ./scripts:/app/scripts:ro
+      - ./data:/app/data
+    depends_on:
+      postgres: {condition: service_healthy}
+      neo4j: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      api: {condition: service_started}
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  neo4jdata:
+  neo4jlogs:
+  redisdata:
