@@ -336,7 +336,26 @@
                   <td class="num">${doc.processing_ms != null ? `${fmtNumber(doc.processing_ms)} ms` : '—'}</td>
                   <td>${provBadge(doc.data_class)}</td>
                 </tr>`;
-              }).join('')}</tbody></table></div>` : '';
+              }).join('')}</tbody></table></div>`
+            // A job with no documents is not the same as a job that did nothing,
+            // and the three reasons need telling apart.
+            : `<div class="state">
+                 <h3>No documents in this job</h3>
+                 <p>${
+                   job.status === 'queued' || job.status === 'running'
+                     ? 'The job has not produced any documents yet.'
+                     : job.skipped_duplicates
+                       ? `All ${job.skipped_duplicates} submitted file(s) were already ingested — `
+                         + 'identical content hash, so nothing was re-processed. This is '
+                         + 'deduplication working, not a failure.'
+                       : job.failed
+                         ? `${job.failed} file(s) failed during processing. See the errors below.`
+                         : 'Every submitted file was rejected before processing, so nothing '
+                           + 'was written. Rejections happen at the storage boundary: '
+                           + 'disallowed extension, size limit, empty file, or content that '
+                           + 'does not match its extension.'
+                 }</p>
+               </div>`;
           const reviews = job.review_queue.length ? `
             <h4 style="margin-top:14px">Review queue (${job.review_queue.length})</h4>
             <p class="small muted">Ambiguous resolutions are surfaced rather than guessed.</p>
