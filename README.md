@@ -7,7 +7,7 @@ a provenance-carrying knowledge graph, and hybrid retrieval — with the five
 capabilities from the brief built as query patterns over it rather than as five
 separate demos.
 
-**Day 1 of the build.** This README separates what runs from what does not. See
+**Day 2 of the build.** This README separates what runs from what does not. See
 [Feature status](#feature-status).
 
 ---
@@ -15,25 +15,28 @@ separate demos.
 ## Measured results
 
 Produced by `python eval/run_eval.py` against a live stack, over 21 golden
-questions and the 6-document corpus described below. Re-runnable; every run is
+questions and the 10-document corpus described below. Re-runnable; every run is
 saved to `eval/results/` with the configuration it ran under.
 
 | Metric | Value | Notes |
 |---|---|---|
 | Context recall (answerable) | **0.941** | did retrieval reach the documents the question needs |
-| Context precision | 0.402 | 8 passages returned per question, unreranked |
+| Context precision | 0.377 | 8 passages returned per question, unreranked |
 | Entity recall | 0.821 | asset tags correctly linked from the question |
 | Intent routing accuracy | 0.905 | deterministic rule classifier |
 | **Abstention recall on unanswerable** | **1.000** | 4 deliberately unanswerable questions, all refused |
 | Abstentions naming a referral | 1.000 | never a bare refusal — names what's missing and who owns it |
-| Mention resolution rate | 100% | 61 mentions, all resolved to a canonical asset |
-| Multi-document assets | 57.1% | assets evidenced by more than one document |
-| p50 / p95 latency | 0.071 s / 0.102 s | end-to-end, retrieval-only configuration |
+| Mention resolution rate | 100% | 92 mentions, all resolved to a canonical asset |
+| Multi-document assets | 46.7% | assets evidenced by more than one document |
+| **Cross-system assets** | **46.7%** | assets evidenced by more than one *source system* — the platform's actual claim |
+| p50 / p95 latency | 0.070 s / 0.199 s | end-to-end, retrieval-only configuration |
+| **Extractions with a verified verbatim span** | **56 / 56 (100%)** | every asserted fact traces to text that literally occurs in the source |
+| OCR mean confidence | 0.95 | 203 words recovered from the scanned document |
 | Answer correctness | **not measurable** | no generation provider configured — reported as such, never as zero |
 
-Corpus behind those numbers: 6 documents → 75 chunks → 2,538 BM25 postings →
-61 mentions → 7 canonical assets, 15 work orders, 24 inspection readings,
-20 atomised requirements.
+Corpus behind those numbers: 10 documents (4 real PDFs, 2 CSV exports, 4
+Markdown) → 91 chunks → 92 mentions → 15 canonical assets, 15 work orders,
+24 inspection readings, 20 atomised requirements, 56 extractions.
 
 **Read the last row carefully.** With no LLM configured the system produces no
 prose answers, so answer correctness cannot be measured. The harness reports
@@ -49,8 +52,14 @@ Requires Docker and Python 3.11+. No credentials needed.
 ```bash
 cp .env.example .env    # then set POSTGRES_PASSWORD and NEO4J_PASSWORD
 docker compose up -d --build
-python data/synthetic/generate.py
-python scripts/ingest_dir.py data/synthetic/generated --data-class synthetic_test_data --wait
+
+python data/synthetic/generate.py        # CSV exports + Markdown reports
+python data/synthetic/generate_pdfs.py   # real PDFs, incl. an image-only scan
+
+python scripts/ingest_dir.py data/synthetic/generated \
+  --data-class synthetic_test_data --source-system synthetic_cmms --wait
+python scripts/ingest_dir.py data/synthetic/generated_pdf \
+  --data-class synthetic_test_data --source-system pdf_corpus --wait
 ```
 
 Then open **http://localhost:8000** (API docs at `/docs`, Neo4j browser at
@@ -59,8 +68,15 @@ Then open **http://localhost:8000** (API docs at `/docs`, Neo4j browser at
 ```bash
 docker compose exec api python scripts/load_requirements.py   # compliance corpus
 python eval/run_eval.py                                       # the numbers above
-python -m pytest -q -m "not integration"                      # 219 unit tests
-python -m pytest -q -m integration                            # 55 API tests
+python -m pytest -q -m "not integration"                      # 300 unit tests
+python -m pytest -q -m integration                            # 64 API tests
+```
+
+The OCR tests skip unless `tesseract` is on your PATH. It is installed in the
+image, so to run them where it lives:
+
+```bash
+docker compose exec api sh -c "cd /app && python -m pytest tests/test_pdf_and_ocr.py -q"
 ```
 
 `make help` lists every target. On Windows without GNU make, run the commands
@@ -76,7 +92,13 @@ Honest categories. Nothing below is described as working when it is mocked.
 
 | Capability | Evidence |
 |---|---|
-| **Universal document ingestion** | PDF, Markdown/text, DOCX, CSV, JSON. Classifier routes by title-block keyword, document number, vector density and filename, and reports which signal decided. Structure-aware chunking per document type. |
+| **Universal document ingestion** | PDF, Markdown/text, DOCX, CSV, JSON, images. Classifier routes by title-block keyword, document number, **vector density** and filename, and reports which signal decided. Structure-aware chunking per document type. See [docs/ingestion.md](docs/ingestion.md). |
+| **Real PDF parsing** | pdfplumber over pdfminer.six. Word geometry → **bounding boxes on every block**; ruled tables extracted as structured rows with the header repeated, and their region excluded from the prose pass so nothing is indexed twice. |
+| **Real OCR** | tesseract 5.3, installed in the image. Offline, no credentials, no network call — the air-gap story stays intact. Per-word bbox and confidence, reading order grouped by `(block, paragraph, line)`. Verified: 203 words at 0.95 mean confidence from an image-only PDF. |
+| **Drawing detection** | Text-chars-per-vector-object ratio, decided per page *before* table extraction. Schematic 2.2, ruled table 35.5, prose 183.9. Also suppresses the phantom tables a schematic's grid lines would otherwise produce. |
+| **Extraction provenance** | Every chunk carries `extraction_method` and `extraction_confidence`. A character *read* from a text layer (1.0) and one *recognised* by OCR (the weakest word's confidence) are different kinds of fact, and the record says which. |
+| **Verbatim-span validation** | Every asserted fact must be supported by a span that literally occurs in the source. Rejections are **stored with their reason**, so the rate is measurable rather than merely claimed. Currently 56/56 verified. |
+| **Failure-vocabulary extraction** | ISO 14224-style codes recovered from free text, then compared with the CMMS-coded field: `agree` / `recoded` (dropdown default) / `disagree` (both kept, neither overwritten). |
 | **Idempotent ingestion** | Content-hash document ids, deterministic chunk/mention ids, upserts throughout. Re-submitting a corpus accepts 0 files and changes no counts — asserted by test. |
 | **Industrial tag normalisation** | Six spellings of one pump unify: `P-101B`, `P101B`, `P 101 B`, `10-P-101-B`, `P-101-B`, `P‑101‑B` (U+2011). Plus `CDU1-PUMP-101B`, `Pump 101 B`, `P-0101B`. ISA 5.1 instruments, line numbers, KKS designations. |
 | **Sibling protection** | `P-101A` and `P-101B` are **never merged** — scored 0.30 → `SIBLING_OF` edge. 82 tests on the tag grammar alone. |
@@ -89,7 +111,7 @@ Honest categories. Nothing below is described as working when it is mocked.
 | **Citations** | Every passage resolves to chunk, document, page and section. Graph edges resolve to the passages that asserted them. |
 | **Calibrated abstention** | Five independent signals. A question naming an asset not in the corpus is capped and refused, naming the asset. |
 | **Evaluation harness** | 21 golden questions across 6 categories, 19% deliberately unanswerable. Runs and reports even when accuracy is zero. |
-| **Dashboard** | 7 pages, vanilla HTML/CSS/JS, no framework, no build step. Force-directed graph explorer written from scratch. |
+| **Dashboard** | 7 pages, vanilla HTML/CSS/JS, no framework, no build step. Force-directed graph explorer written from scratch. Ingestion page shows real jobs: pages, chunks, entities, graph nodes, per-document duration, how each document was read (text layer vs OCR, with confidence), drawing/table flags, and errors. |
 | **Provenance labelling** | Six `data_class` values on every displayed value, rendered as a badge. |
 | **Background jobs** | Reliable Redis queue with per-worker in-flight lists, ack/nack, stale reclaim on restart. |
 | **SSE streaming** | Live ingestion events and streamed query pipeline stages — real stage completions, not timers. |
@@ -102,9 +124,8 @@ Each reports `provider_not_configured` and names the variables. Nothing is faked
 |---|---|
 | **Dense retrieval** (pgvector) | `EMBEDDING_PROVIDER=openai` + `OPENAI_API_KEY`, or `EMBEDDING_PROVIDER=local` + `sentence-transformers` |
 | **Grounded answer generation** | `LLM_PROVIDER=openai\|anthropic` + `LLM_MODEL` + `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` |
-| **LLM extraction** of failure modes, causes, obligations from prose | as above |
+| **LLM extraction** of causal chains, actions and obligations from prose | as above. The adapter, schema constraint and verbatim validation are built and unit-tested; only the provider is absent. |
 | **Cross-encoder reranking** | `RERANKER_PROVIDER=local` |
-| **OCR** for scanned documents and P&ID rasters | `OCR_PROVIDER=paddle\|tesseract` (adapter not written) |
 
 ### Partially implemented
 
@@ -207,20 +228,22 @@ services/
   common/     config · logging · errors · db · graph · bus · tags · schemas · migrate
   api/        FastAPI app + routers (health, ingest, query, assets, graph, rca,
               compliance, notifications, feedback, events)
-  ingest/     storage · classify · parsers/ · chunk · extract · resolve ·
-              embeddings · graph_writer · pipeline · worker
+  ingest/     storage · classify · parsers/ (pdf·text·docx·tabular·image) · ocr ·
+              chunk · extract · llm_extract · resolve · embeddings ·
+              graph_writer · pipeline · worker
   retrieval/  intent · lexical (BM25) · dense · graph_retrieval · fusion ·
               generate · confidence · pipeline
 database/
-  migrations/ 4 SQL migrations — core schema, BM25 index, pgvector, enum extension
+  migrations/ 5 SQL migrations — core schema, BM25 index, pgvector, enum
+              extension, extraction provenance + timing
   cypher/     constraints and indexes · ontology seed
 web/          7 HTML pages · css/base.css · js/{api,ui,graphview}.js
 data/
   corpus/     real documents (empty by design) + SOURCES.md + manifest schema
-  synthetic/  deterministic generator + SCHEMA.md
+  synthetic/  deterministic generators (CSV/Markdown + real PDFs) + SCHEMA.md
   requirements/ atomised requirements with per-entry provenance
 eval/         golden.jsonl (21 questions) · run_eval.py · results/
-tests/        274 tests — 219 unit, 55 integration
+tests/        370 tests — 306 unit, 64 integration
 docs/         architecture · ontology · security · adr/
 ```
 
@@ -253,34 +276,43 @@ finds.
 1. **No answer generation without a credential.** Every query returns
    `ABSTAIN_NO_GENERATOR`. Retrieval, fusion, citation binding and confidence all
    run and the evidence is real, but there is no prose answer to grade.
-2. **Cross-system linkage is 0%.** Everything ingested so far carries one
-   `source_system` label, so the platform's headline claim is not yet
-   demonstrated numerically. Ingesting a second source with a different label is
-   what makes that metric mean something. The dashboard says this in place of
-   showing a flattering number.
-3. **Comparative questions score 0.0 context recall** (1 question). "Which of the
+2. **Comparative questions score 0.0 context recall** (1 question). "Which of the
    two pumps has more downtime?" names no parseable tag, so the graph leg has no
    anchor. Needs an aggregation router.
-4. **Diagnostic intent accuracy is 0.33** (3 questions). Two are phrased without a
+3. **Diagnostic intent accuracy is 0.33** (3 questions). Two are phrased without a
    causal marker. Deliberately *not* fixed by adding their exact wording to the
    rules — tuning a classifier to its own benchmark makes the benchmark
    meaningless.
-5. **`Incident`, `MOC` and `CAPA` nodes are not created from prose.** The
+4. **`Incident`, `MOC` and `CAPA` nodes are not created from prose.** The
    documents ingest and link, but the structured nodes need the LLM extractor. So
    RCA reports `incidents: 0` for P-101B even though two incident reports about
    it are ingested and retrievable.
-6. **No bounding boxes**, so citations resolve to page and section but not to a
-   highlighted span. `pypdf` gives reading order, not per-span geometry; the
-   schema and citation contract already carry the field.
-7. **Reranking is not configured**, so the fused RRF order is used unchanged.
+5. **Bounding boxes are per block, not per sentence.** Citations resolve to a
+   page and a rectangle around the passage, which is enough to scroll to but not
+   to highlight one sentence inside it. Sentence-level anchoring needs the span
+   offsets carried through chunk splitting, which is not done.
+6. **OCR reading order is good, not perfect.** Tesseract's `--psm 3` layout
+   analysis handles the corpus correctly, but a form with columns aligned across
+   a page can still interleave. The per-word geometry needed to detect and fix
+   that is stored; the correction is not written.
+7. **The P&ID is classified, not understood.** Vector density routes it to the
+   drawing pipeline and its text layer is indexed, so tags on the sheet are
+   searchable. Symbol detection, line tracing and topology reconstruction are
+   not built, so `FEEDS` / `ISOLATES` edges do not exist.
+8. **Reranking is not configured**, so the fused RRF order is used unchanged.
    This is reported on every query rather than silently skipped.
-8. **One unresolved review item** in the demo corpus: `P-101` appears without an
+9. **One unresolved review item** in the demo corpus: `P-101` appears without an
    item suffix alongside `P-101A`/`P-101B`. It is flagged for review rather than
    silently asserted as a third pump — the intended behaviour, visible on the
    ingestion page.
-9. **Neo4j Community** has no `NODE KEY` constraints, so composite keys are
-   single-property unique constraints with existence enforced by the loader.
-10. **Not deployable.** No auth, no multi-tenancy, no PII redaction, no TLS, no
+10. **Neo4j Community** has no `NODE KEY` constraints, so composite keys are
+    single-property unique constraints with existence enforced by the loader.
+11. **The corpus is synthetic content in real containers.** The PDFs are genuine
+    PDF files — real text layers, real ruled tables, a real image-only scan, real
+    vector geometry — but the plant they describe is invented and every page says
+    so. Real industrial documents remain the single largest quality lever; see
+    [data/corpus/SOURCES.md](data/corpus/SOURCES.md).
+12. **Not deployable.** No auth, no multi-tenancy, no PII redaction, no TLS, no
     rate limiting. See [docs/security.md](docs/security.md).
 
 ---
@@ -288,6 +320,7 @@ finds.
 ## Documentation
 
 * [docs/architecture.md](docs/architecture.md) — seven layers, three paths, entity resolution
+* [docs/ingestion.md](docs/ingestion.md) — the write path: parsers, OCR, provenance, extraction, failure handling
 * [docs/ontology.md](docs/ontology.md) — labels, edges, and which are populated today
 * [docs/security.md](docs/security.md) — what is enforced and what is not
 * [docs/adr/0001-technology-choices.md](docs/adr/0001-technology-choices.md) — why each component, and what was rejected

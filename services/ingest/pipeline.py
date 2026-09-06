@@ -22,6 +22,7 @@ for a real one.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from dataclasses import dataclass, field
@@ -30,7 +31,6 @@ from pathlib import Path
 from typing import Any
 
 from services.common import bus, db
-from services.common.config import get_settings
 from services.common.ids import chunk_id as make_chunk_id
 from services.common.ids import document_id as make_document_id
 from services.common.ids import mention_id as make_mention_id
@@ -41,7 +41,11 @@ from services.ingest.chunk import Chunk, chunk_document
 from services.ingest.classify import classify
 from services.ingest.embeddings import get_embedding_provider
 from services.ingest.extract import extract_all
-from services.ingest.parsers import parse_document
+from services.ingest.llm_extract import extract_facts as llm_extract_facts
+from services.ingest.llm_extract import extraction_capability
+from services.ingest.ocr import get_ocr_provider, ocr_capability
+from services.ingest.parsers import ParsedDocument, parse_document
+from services.ingest.parsers.image_parser import blocks_from_ocr, ocr_quality_warnings
 from services.ingest.resolve import AssetIndex, resolve_mentions
 from services.retrieval.lexical import index_chunk_terms
 
@@ -76,6 +80,8 @@ class DocumentResult:
     mentions: int = 0
     assets: int = 0
     edges: int = 0
+    processing_ms: int = 0
+    pages: int | None = None
     stages: list[StageOutcome] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     error: str | None = None
@@ -90,6 +96,8 @@ class DocumentResult:
             "mentions": self.mentions,
             "assets": self.assets,
             "edges": self.edges,
+            "processing_ms": self.processing_ms,
+            "pages": self.pages,
             "stages": [s.to_dict() for s in self.stages],
             "warnings": self.warnings,
             "error": self.error,
@@ -139,12 +147,53 @@ async def ingest_file(
                 detail=f"parser={parsed.parser}",
             )
         )
+    elif parsed.page_count and parsed.has_text_layer is False:
+        # No text layer is a routing decision, not a failure. The document is a
+        # scan; the OCR stage below reports what actually became of it. Calling
+        # this an error would make every scanned document look broken and would
+        # hide the real signal when a file genuinely cannot be read.
+        result.stages.append(
+            StageOutcome(
+                "parse",
+                CapabilityState.AVAILABLE,
+                items=0,
+                detail=(
+                    f"{parsed.page_count} page(s) with no embedded text layer: this is a "
+                    "scan, routed to OCR."
+                ),
+            )
+        )
     else:
         result.stages.append(
             StageOutcome(
                 "parse",
                 CapabilityState.ERROR,
                 detail="; ".join(parsed.warnings) or "no text extracted",
+            )
+        )
+
+    # --- OCR ---------------------------------------------------------------
+    # A PDF whose pages carry no text layer is a scan. The parser has already
+    # said so; this is where the text is actually recovered, before
+    # classification, because a document nobody can read cannot be classified by
+    # its content either.
+    needs_ocr = blob.extension.lower() == ".pdf" and not parsed.has_text_layer
+    if needs_ocr:
+        parsed, ocr_stage = await _recover_with_ocr(data, parsed)
+        result.stages.append(ocr_stage)
+        result.warnings.extend(parsed.warnings[-4:])
+    elif parsed.parser.startswith("ocr:"):
+        # A raster image went through the OCR parser directly.
+        report = parsed.metadata.get("ocr", {})
+        result.stages.append(
+            StageOutcome(
+                "ocr",
+                CapabilityState.AVAILABLE,
+                items=int(report.get("words", 0)),
+                detail=(
+                    f"engine={report.get('engine')} "
+                    f"mean confidence {float(report.get('mean_confidence', 0)) * 100:.0f}%"
+                ),
             )
         )
 
@@ -155,8 +204,11 @@ async def ingest_file(
         head_text=parsed.head_text,
         page_count=parsed.page_count,
         has_text_layer=parsed.has_text_layer,
+        vector_segment_count=parsed.metadata.get("vector_objects"),
+        drawing_signature=bool(parsed.metadata.get("drawing_signature")),
     )
     result.doc_type = classification.doc_type.value
+    result.pages = parsed.page_count
     result.stages.append(
         StageOutcome(
             "classify",
@@ -165,32 +217,6 @@ async def ingest_file(
             f"(confidence {classification.confidence:.2f}, via {classification.method})",
         )
     )
-
-    # --- OCR (capability boundary) ----------------------------------------
-    settings = get_settings()
-    if classification.needs_ocr or not parsed.blocks:
-        if settings.ocr_provider == "none":
-            result.stages.append(
-                StageOutcome(
-                    "ocr",
-                    CapabilityState.NOT_CONFIGURED,
-                    detail=(
-                        "This document has no usable text layer. No OCR provider is "
-                        "configured, so its text was not recovered. It is recorded with "
-                        "its metadata and queued for review."
-                    ),
-                    required_env=["OCR_PROVIDER"],
-                )
-            )
-        else:
-            result.stages.append(
-                StageOutcome(
-                    "ocr",
-                    CapabilityState.NOT_IMPLEMENTED,
-                    detail=f"OCR_PROVIDER={settings.ocr_provider} is selected but the "
-                    "provider adapter is not implemented yet.",
-                )
-            )
 
     # --- persist the document row -----------------------------------------
     title = _derive_title(parsed.metadata, blob.original_filename)
@@ -203,12 +229,16 @@ async def ingest_file(
             doc_id, content_hash, title, doc_type, doc_type_confidence, doc_type_method,
             data_class, source_system, source_path, original_filename, mime_type,
             byte_size, page_count, has_text_layer, revision, issued_on, blob_path,
-            ingest_job_id, metadata
+            ingest_job_id, metadata,
+            parser, ocr_engine, ocr_mean_confidence, ocr_word_count,
+            vector_objects, is_drawing, tables_found
         ) VALUES (
             %(doc_id)s, %(content_hash)s, %(title)s, %(doc_type)s, %(conf)s, %(method)s,
             %(data_class)s, %(source_system)s, %(source_path)s, %(filename)s, %(mime)s,
             %(byte_size)s, %(page_count)s, %(has_text)s, %(revision)s, %(issued_on)s,
-            %(blob_path)s, %(job_id)s, %(metadata)s
+            %(blob_path)s, %(job_id)s, %(metadata)s,
+            %(parser)s, %(ocr_engine)s, %(ocr_conf)s, %(ocr_words)s,
+            %(vector_objects)s, %(is_drawing)s, %(tables_found)s
         )
         ON CONFLICT (doc_id) DO NOTHING
         """,
@@ -231,6 +261,13 @@ async def ingest_file(
             "issued_on": issued_on,
             "blob_path": blob.path,
             "job_id": job_id,
+            "parser": parsed.parser,
+            "ocr_engine": (parsed.metadata.get("ocr") or {}).get("engine"),
+            "ocr_conf": (parsed.metadata.get("ocr") or {}).get("mean_confidence"),
+            "ocr_words": (parsed.metadata.get("ocr") or {}).get("words"),
+            "vector_objects": parsed.metadata.get("vector_objects"),
+            "is_drawing": bool(parsed.metadata.get("drawing_signature")),
+            "tables_found": int(parsed.metadata.get("tables_found") or 0),
             "metadata": json.dumps(
                 {
                     **parsed.metadata,
@@ -319,11 +356,40 @@ async def ingest_file(
     review_items: list[dict[str, Any]] = []
     new_assets: dict[str, dict[str, Any]] = {}
     degradation_cues = 0
+    failure_terms: list[dict[str, Any]] = []
+    llm_facts: list[dict[str, Any]] = []
+    llm_calls = 0
+    llm_rejected = 0
+    llm_state = CapabilityState.NOT_CONFIGURED
+    llm_detail: str | None = None
+    llm_required_env: list[str] = []
 
     for chunk in chunks:
         cid = make_chunk_id(doc_id, chunk.ordinal)
         extraction = extract_all(chunk.text)
         degradation_cues += len(extraction.degradation_cues)
+
+        # Deterministic failure vocabulary, recorded with its verbatim span so
+        # the assertion is checkable against the source.
+        for term in extraction.failure_terms:
+            failure_terms.append({**term, "chunk_id": cid, "page": chunk.page_from})
+
+        # Reasoning-dependent facts. Gated twice: on the provider being
+        # configured at all, and on this chunk plausibly containing a causal
+        # narrative, so a table of thickness readings costs nothing.
+        llm_result = await llm_extract_facts(
+            text=chunk.text,
+            chunk_kind=chunk.kind,
+            has_failure_vocabulary=bool(extraction.failure_terms),
+        )
+        llm_state = llm_result.state
+        llm_detail = llm_result.detail
+        llm_required_env = llm_result.required_env
+        llm_calls += llm_result.calls
+        llm_rejected += llm_result.rejected
+        for fact in llm_result.facts:
+            llm_facts.append({**fact.to_row(), "chunk_id": cid, "page": chunk.page_from})
+
         if not extraction.tags:
             continue
 
@@ -383,26 +449,45 @@ async def ingest_file(
 
     result.mentions = len(all_mentions)
     result.assets = len(new_assets)
+    await _persist_extractions(
+        doc_id=doc_id, failure_terms=failure_terms, llm_facts=llm_facts, data_class=data_class
+    )
+
     result.stages.append(
         StageOutcome(
             "extract",
             CapabilityState.AVAILABLE,
             items=len(all_mentions),
-            detail=f"deterministic extractors (regex grammar + gazetteer); "
-            f"{degradation_cues} degradation cues found",
+            detail=(
+                f"deterministic extractors (tag grammar + gazetteer); "
+                f"{len(failure_terms)} failure-mode term(s), "
+                f"{degradation_cues} degradation cue(s)"
+            ),
         )
     )
-    if settings.llm_provider == "none":
+
+    verified = sum(1 for f in llm_facts if f["quote_verified"])
+    if llm_state is CapabilityState.AVAILABLE and llm_facts:
         result.stages.append(
             StageOutcome(
                 "extract_llm",
-                CapabilityState.NOT_CONFIGURED,
+                CapabilityState.AVAILABLE,
+                items=verified,
                 detail=(
-                    "Failure modes, causes and obligations expressed in prose require a "
-                    "generation provider. Deterministic tag/date/quantity extraction ran and "
-                    "is unaffected."
+                    f"{llm_calls} model call(s); {verified} fact(s) with a verified verbatim "
+                    f"span, {llm_rejected} rejected for unverifiable evidence"
                 ),
-                required_env=["LLM_PROVIDER", "LLM_MODEL", "OPENAI_API_KEY or ANTHROPIC_API_KEY"],
+            )
+        )
+    else:
+        state, detail, required_env = extraction_capability()
+        result.stages.append(
+            StageOutcome(
+                "extract_llm",
+                state if llm_state is not CapabilityState.ERROR else CapabilityState.ERROR,
+                items=0,
+                detail=llm_detail if llm_state is CapabilityState.ERROR else detail,
+                required_env=llm_required_env or required_env,
             )
         )
     result.stages.append(
@@ -481,6 +566,30 @@ async def ingest_file(
         )
     )
 
+    # Per-document counters the ingestion dashboard reports. Written here rather
+    # than recomputed by the API so the numbers on screen are the numbers this
+    # run actually produced, including how long it took.
+    result.processing_ms = int((time.perf_counter() - started) * 1000)
+    await db.execute(
+        """
+        UPDATE documents SET
+            processing_ms       = %s,
+            chunk_count         = %s,
+            mention_count       = %s,
+            graph_nodes_created = %s,
+            graph_edges_created = %s
+        WHERE doc_id = %s
+        """,
+        (
+            result.processing_ms,
+            len(chunks),
+            len(all_mentions),
+            len(new_assets),
+            edges,
+            doc_id,
+        ),
+    )
+
     await db.execute(
         "INSERT INTO events (event_type, doc_id, job_id, payload) VALUES (%s, %s, %s, %s)",
         (
@@ -523,6 +632,62 @@ async def ingest_file(
     return result
 
 
+async def _recover_with_ocr(
+    data: bytes, parsed: ParsedDocument
+) -> tuple[ParsedDocument, StageOutcome]:
+    """Run OCR over a PDF that has no usable text layer.
+
+    Returns the parsed document either enriched with recognised text, or
+    unchanged with a stage outcome explaining why it could not be. It never
+    invents text: with no provider configured the document keeps its metadata,
+    keeps ``has_text_layer=False``, and is queued for review.
+    """
+    state, detail, required_env = ocr_capability()
+    if state is not CapabilityState.AVAILABLE:
+        return parsed, StageOutcome("ocr", state, detail=detail, required_env=required_env)
+
+    result = await asyncio.to_thread(get_ocr_provider().ocr_pdf, data)
+    if result.state is not CapabilityState.AVAILABLE:
+        return parsed, StageOutcome(
+            "ocr",
+            result.state,
+            detail=result.detail,
+            required_env=result.required_env,
+        )
+
+    blocks = blocks_from_ocr(result.pages)
+    if not blocks:
+        return parsed, StageOutcome(
+            "ocr",
+            CapabilityState.AVAILABLE,
+            items=0,
+            detail=(
+                f"engine={result.engine} recognised no text. The document is recorded "
+                "with its metadata and queued for review."
+            ),
+        )
+
+    report = result.quality_report()
+    parsed.blocks = blocks
+    parsed.parser = f"{parsed.parser}+ocr:{result.engine}"
+    parsed.metadata["ocr"] = report
+    # `has_text_layer` stays False on purpose: these characters were recognised,
+    # not read. Anything downstream that treats OCR output as equivalent to an
+    # embedded text layer is making an assumption it should not.
+    parsed.warnings.extend(ocr_quality_warnings(result.pages))
+
+    return parsed, StageOutcome(
+        "ocr",
+        CapabilityState.AVAILABLE,
+        items=int(report["words"]),
+        detail=(
+            f"engine={result.engine} recovered {report['words']} words across "
+            f"{report['pages']} page(s) at {float(report['mean_confidence']) * 100:.0f}% "
+            f"mean confidence ({report['low_confidence_words']} low-confidence)"
+        ),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Persistence helpers
 # ---------------------------------------------------------------------------
@@ -538,13 +703,16 @@ async def _persist_chunks(doc_id: str, chunks: list[Chunk], data_class: DataClas
                 INSERT INTO document_chunks (
                     chunk_id, doc_id, ordinal, text, context_header, section_path,
                     page_from, page_to, char_start, char_end, bbox, chunk_kind,
-                    token_count, data_class
-                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    token_count, data_class, extraction_method, extraction_confidence
+                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 ON CONFLICT (chunk_id) DO UPDATE SET
                     text = EXCLUDED.text,
                     context_header = EXCLUDED.context_header,
                     section_path = EXCLUDED.section_path,
-                    token_count = EXCLUDED.token_count
+                    token_count = EXCLUDED.token_count,
+                    bbox = EXCLUDED.bbox,
+                    extraction_method = EXCLUDED.extraction_method,
+                    extraction_confidence = EXCLUDED.extraction_confidence
                 """,
                 (
                     make_chunk_id(doc_id, chunk.ordinal),
@@ -561,6 +729,8 @@ async def _persist_chunks(doc_id: str, chunks: list[Chunk], data_class: DataClas
                     chunk.kind,
                     chunk.token_estimate,
                     data_class.value,
+                    chunk.extraction_method,
+                    chunk.extraction_confidence,
                 ),
             )
 
@@ -651,6 +821,77 @@ async def _persist_mentions(mentions: list[dict[str, Any]]) -> None:
             ) s
             WHERE a.asset_id = s.asset_id
             """
+        )
+
+
+async def _persist_extractions(
+    *,
+    doc_id: str,
+    failure_terms: list[dict[str, Any]],
+    llm_facts: list[dict[str, Any]],
+    data_class: DataClass,
+) -> None:
+    """Record every asserted fact with the span it was based on.
+
+    Rejected extractions are stored too, with the reason. Discarding them would
+    make the verbatim-validation rate unmeasurable -- and "0.0% of asserted facts
+    lack a verified source span" is only a number if the denominator is kept.
+    """
+    if not failure_terms and not llm_facts:
+        return
+
+    rows: list[tuple[Any, ...]] = []
+    for term in failure_terms:
+        rows.append(
+            (
+                doc_id,
+                term.get("chunk_id"),
+                "failure_mode",
+                term["extractor"],
+                json.dumps(
+                    {"failure_mode_code": term["failure_mode_code"], "phrase": term["phrase"]}
+                ),
+                term["quote"],
+                True,  # located by literal search, so verified by construction
+                None,
+                term["confidence"],
+                term["char_start"],
+                term["char_end"],
+                term.get("page"),
+                data_class.value,
+            )
+        )
+    for fact in llm_facts:
+        rows.append(
+            (
+                doc_id,
+                fact.get("chunk_id"),
+                fact["kind"],
+                fact["extractor"],
+                json.dumps(fact["payload"]),
+                fact["evidence_quote"],
+                fact["quote_verified"],
+                fact["reject_reason"],
+                fact["confidence"],
+                fact["char_start"],
+                fact["char_end"],
+                fact.get("page"),
+                # A model inference is never an audit record, whatever the
+                # document it came from was classified as.
+                DataClass.MODEL_DERIVED.value,
+            )
+        )
+
+    async with db.connection() as conn, conn.cursor() as cur:
+        await cur.executemany(
+            """
+            INSERT INTO extractions (
+                doc_id, chunk_id, kind, extractor, payload, evidence_quote,
+                quote_verified, reject_reason, confidence, char_start, char_end,
+                page, data_class
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            """,
+            rows,
         )
 
 
@@ -901,9 +1142,7 @@ def _derive_revision(head_text: str) -> str | None:
 
 
 def _derive_issue_date(head_text: str) -> date | None:
-    from services.ingest.extract import extract_all as _extract
-
-    dates = _extract(head_text[:2000]).dates
+    dates = extract_all(head_text[:2000]).dates
     if not dates:
         return None
     return date.fromisoformat(dates[0]["date"])

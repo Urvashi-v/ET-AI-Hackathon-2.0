@@ -42,11 +42,22 @@ if [[ $QUICK -eq 0 ]]; then
   step "Docker stack"       docker compose up -d --build --wait --wait-timeout 300
   step "Health report"      bash -c "curl -fsS localhost:8000/health | $PY -m json.tool >/dev/null"
   step "Load requirements"  docker compose exec -T api python scripts/load_requirements.py
-  step "Generate corpus"    "$PY" data/synthetic/generate.py
+  step "Generate corpus"     "$PY" data/synthetic/generate.py
+  step "Generate PDF corpus" "$PY" data/synthetic/generate_pdfs.py
+  # Two source systems, deliberately: cross-system linkage is only measurable
+  # when documents actually come from more than one.
   step "Ingest corpus"      "$PY" scripts/ingest_dir.py data/synthetic/generated \
-                                --data-class synthetic_test_data --wait
+                                --data-class synthetic_test_data \
+                                --source-system synthetic_cmms --wait
+  step "Ingest PDF corpus"  "$PY" scripts/ingest_dir.py data/synthetic/generated_pdf \
+                                --data-class synthetic_test_data \
+                                --source-system pdf_corpus --wait
+  # Run the OCR suite where the tesseract binary lives.
+  step "OCR tests (in container)" docker compose exec -T api \
+      sh -c "cd /app && python -m pytest tests/test_pdf_and_ocr.py -q -p no:cacheprovider"
   step "Idempotent re-ingest" "$PY" scripts/ingest_dir.py data/synthetic/generated \
-                                --data-class synthetic_test_data --wait
+                                --data-class synthetic_test_data \
+                                --source-system synthetic_cmms --wait
   step "API contract tests" "$PY" -m pytest -q -m integration
   step "Evaluation harness" "$PY" eval/run_eval.py --api http://localhost:8000 --tag verify
 fi

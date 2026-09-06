@@ -24,8 +24,16 @@ jobs:
           cache: pip
           cache-dependency-path: requirements-dev.txt
 
+      # The OCR tests skip without it. Installing it here means the scanned-
+      # document path is genuinely exercised in CI rather than always skipped.
+      - name: Install tesseract
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-eng
+
       - name: Install
         run: pip install -r requirements-dev.txt
+
+      - name: Generate the PDF corpus
+        run: python data/synthetic/generate_pdfs.py
 
       - name: Ruff (lint)
         run: python -m ruff check services eval tests data scripts
@@ -86,14 +94,25 @@ jobs:
       - name: Generate and ingest the synthetic corpus
         run: |
           python data/synthetic/generate.py
+          python data/synthetic/generate_pdfs.py
           python scripts/ingest_dir.py data/synthetic/generated \
-            --data-class synthetic_test_data --wait
+            --data-class synthetic_test_data --source-system synthetic_cmms --wait
+          # Real PDFs: a text layer with ruled tables, a vector schematic, and an
+          # image-only scan that must go through OCR inside the container.
+          python scripts/ingest_dir.py data/synthetic/generated_pdf \
+            --data-class synthetic_test_data --source-system pdf_corpus --wait
+
+      - name: OCR actually ran on the scanned document
+        run: |
+          docker compose exec -T postgres psql -U ${POSTGRES_USER:-brain} -d industrial_brain -tAc \
+            "SELECT count(*) FROM documents WHERE ocr_engine IS NOT NULL AND ocr_word_count > 0" \
+            | grep -qv '^0$' || (echo "no document was processed by OCR" && exit 1)
 
       - name: Ingestion is idempotent
         run: |
           # Re-submitting the same bytes must accept nothing and change nothing.
           python scripts/ingest_dir.py data/synthetic/generated \
-            --data-class synthetic_test_data --wait
+            --data-class synthetic_test_data --source-system synthetic_cmms --wait
 
       - name: API contract tests
         run: python -m pytest -q -m integration

@@ -84,6 +84,14 @@ class Chunk:
     char_end: int = 0
     bbox: list[float] | None = None
     kind: str = "prose"
+    #: Weakest extraction confidence among the blocks that formed this chunk.
+    #: The minimum, not the mean: a chunk is only as trustworthy as its worst
+    #: sentence, and an OCR line read at 40% drags the whole passage down.
+    extraction_confidence: float = 1.0
+    #: How the text was obtained: pdfplumber.text_layer, pdfplumber.table, ocr,
+    #: python-docx, tabular. Carried to the citation so a reader can tell a read
+    #: character from a recognised one.
+    extraction_method: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -164,7 +172,10 @@ def _chunk_records(parsed: ParsedDocument) -> list[Chunk]:
                 page_to=block.page,
                 char_start=block.char_start,
                 char_end=block.char_end,
+                bbox=block.bbox,
                 kind="record",
+                extraction_confidence=block.extraction_confidence,
+                extraction_method=block.metadata.get("extraction_method"),
                 metadata=dict(block.metadata),
             )
         )
@@ -216,6 +227,7 @@ def _chunk_procedure(parsed: ParsedDocument) -> list[Chunk]:
         # asked for. The association is preserved in metadata instead, where the
         # UI renders it alongside the step and nothing is lost.
         body = " ".join(pending["lines"]).strip()
+        confidence, method = merge_provenance(pending["blocks"])
         chunks.append(
             Chunk(
                 ordinal=ordinal,
@@ -225,6 +237,9 @@ def _chunk_procedure(parsed: ParsedDocument) -> list[Chunk]:
                 page_to=pending["page"],
                 char_start=pending["char_start"],
                 char_end=pending["char_start"] + len(body),
+                bbox=merge_bbox(pending["blocks"]),
+                extraction_confidence=confidence,
+                extraction_method=method,
                 kind="step",
                 metadata={
                     "step_no": pending["step_no"],
@@ -257,6 +272,9 @@ def _chunk_procedure(parsed: ParsedDocument) -> list[Chunk]:
                 page_to=block.page,
                 char_start=block.char_start,
                 char_end=block.char_start + len(text),
+                bbox=block.bbox,
+                extraction_confidence=block.extraction_confidence,
+                extraction_method=block.metadata.get("extraction_method"),
                 kind="precondition",
                 metadata={"governs_following_steps": True},
             )
@@ -295,6 +313,9 @@ def _chunk_procedure(parsed: ParsedDocument) -> list[Chunk]:
                     page_to=prose_block.page,
                     char_start=prose_block.char_start,
                     char_end=prose_block.char_start + len(text),
+                    bbox=prose_block.bbox,
+                    extraction_confidence=prose_block.extraction_confidence,
+                    extraction_method=prose_block.metadata.get("extraction_method"),
                     kind="prose",
                 )
             )
@@ -330,11 +351,14 @@ def _chunk_procedure(parsed: ParsedDocument) -> list[Chunk]:
                     "section": current_section or block.section_path,
                     "page": block.page,
                     "char_start": block.char_start,
+                    "blocks": [block],
                 }
                 continue
 
             if pending is not None:
                 pending["lines"].append(stripped)
+                if block not in pending["blocks"]:
+                    pending["blocks"].append(block)
                 continue
 
             if in_governing_section:
@@ -382,6 +406,9 @@ def _chunk_incident(parsed: ParsedDocument) -> list[Chunk]:
                     page_to=buffer[-1].page,
                     char_start=buffer[0].char_start,
                     char_end=buffer[-1].char_end,
+                    bbox=merge_bbox(buffer),
+                    extraction_confidence=merge_provenance(buffer)[0],
+                    extraction_method=merge_provenance(buffer)[1],
                     kind="incident_section",
                     metadata={"section": current_label},
                 )
@@ -421,6 +448,9 @@ def _chunk_drawing(parsed: ParsedDocument) -> list[Chunk]:
             page_to=parsed.page_count,
             char_start=0,
             char_end=min(len(text), MAX_CHARS),
+            bbox=merge_bbox(parsed.blocks),
+            extraction_confidence=merge_provenance(parsed.blocks)[0],
+            extraction_method=merge_provenance(parsed.blocks)[1],
             kind="summary",
             metadata={
                 "note": "Drawing text layer only. Topology reconstruction is a separate "
@@ -456,6 +486,9 @@ def _chunk_prose(parsed: ParsedDocument) -> list[Chunk]:
                     page_to=buffer[-1].page,
                     char_start=buffer[0].char_start + piece_start,
                     char_end=buffer[0].char_start + piece_start + len(piece),
+                    bbox=merge_bbox(buffer),
+                    extraction_confidence=merge_provenance(buffer)[0],
+                    extraction_method=merge_provenance(buffer)[1],
                     kind="table_row" if buffer[0].kind == "table_row" else "prose",
                 )
             )
@@ -480,7 +513,10 @@ def _chunk_prose(parsed: ParsedDocument) -> list[Chunk]:
                     page_to=block.page,
                     char_start=block.char_start,
                     char_end=block.char_end,
+                    bbox=block.bbox,
                     kind="table_row",
+                    extraction_confidence=block.extraction_confidence,
+                    extraction_method=block.metadata.get("extraction_method"),
                     metadata=dict(block.metadata),
                 )
             )
@@ -504,6 +540,38 @@ def _chunk_prose(parsed: ParsedDocument) -> list[Chunk]:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def merge_bbox(blocks: list[TextBlock]) -> list[float] | None:
+    """Union of the blocks' bounding boxes, when they share a page.
+
+    A chunk spanning a page break has no single rectangle, so it gets none
+    rather than a misleading one that spans both pages.
+    """
+    boxes = [b.bbox for b in blocks if b.bbox]
+    if not boxes:
+        return None
+    pages = {b.page for b in blocks if b.bbox}
+    if len(pages) > 1:
+        return None
+    return [
+        min(box[0] for box in boxes),
+        min(box[1] for box in boxes),
+        max(box[2] for box in boxes),
+        max(box[3] for box in boxes),
+    ]
+
+
+def merge_provenance(blocks: list[TextBlock]) -> tuple[float, str | None]:
+    """Weakest confidence, and the extraction method if the blocks agree."""
+    if not blocks:
+        return 1.0, None
+    confidence = min(b.extraction_confidence for b in blocks)
+    methods = {
+        b.metadata.get("extraction_method") for b in blocks if b.metadata.get("extraction_method")
+    }
+    method = methods.pop() if len(methods) == 1 else ("mixed" if methods else None)
+    return round(confidence, 4), method
 
 
 def _split_lines(block: TextBlock) -> list[str]:

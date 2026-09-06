@@ -294,17 +294,49 @@
             })).join('');
           const docs = job.documents.length ? `
             <div class="table-wrap"><table class="data">
-              <thead><tr><th>Document</th><th>Type</th><th>Provenance</th><th class="num">Pages</th><th>Text layer</th></tr></thead>
-              <tbody>${job.documents.map((doc) => `
+              <thead><tr>
+                <th>Document</th><th>Type</th><th>Read by</th><th class="num">Pages</th>
+                <th class="num">Chunks</th><th class="num">Entities</th><th class="num">Graph nodes</th>
+                <th class="num">Duration</th><th>Provenance</th>
+              </tr></thead>
+              <tbody>${job.documents.map((doc) => {
+                // How the text was obtained is the distinction that matters:
+                // characters read from a text layer and characters recognised by
+                // OCR are different kinds of fact, and the confidence says so.
+                const ocrPct = doc.ocr_mean_confidence != null
+                  ? Math.round(doc.ocr_mean_confidence * 100) : null;
+                const readBy = doc.ocr_engine
+                  ? `<span class="badge ${ocrPct >= 85 ? 'warn' : 'danger'}" title="Text recognised by OCR, not read from a text layer">
+                       OCR ${esc(doc.ocr_engine)} · ${ocrPct}%</span>`
+                  : (doc.has_text_layer === false
+                      ? '<span class="badge danger" title="No text layer and no OCR provider configured">unread</span>'
+                      : '<span class="badge ok" title="Read from the embedded text layer">text layer</span>');
+                const flags = [
+                  doc.is_drawing ? '<span class="badge info no-dot" title="Dense vector geometry with sparse text">drawing</span>' : '',
+                  doc.tables_found ? `<span class="badge neutral no-dot">${doc.tables_found} table(s)</span>` : '',
+                ].filter(Boolean).join(' ');
+                return `
                 <tr>
-                  <td>${esc(doc.title)}</td>
-                  <td>${esc(String(doc.doc_type).replaceAll('_', ' '))}</td>
-                  <td>${provBadge(doc.data_class)}</td>
+                  <td>
+                    <div>${esc(doc.original_filename || doc.title)}</div>
+                    <div class="small dim mono">${esc(doc.parser || '')}</div>
+                    ${doc.ingest_error ? `<div class="small" style="color:var(--danger)">${esc(doc.ingest_error)}</div>` : ''}
+                  </td>
+                  <td>
+                    <div>${esc(String(doc.doc_type).replaceAll('_', ' '))}</div>
+                    <div class="small dim" title="${esc(doc.doc_type_method || '')}">${
+                      doc.doc_type_confidence != null ? `${Math.round(doc.doc_type_confidence * 100)}% conf` : ''}</div>
+                    ${flags ? `<div class="row tight" style="margin-top:3px">${flags}</div>` : ''}
+                  </td>
+                  <td>${readBy}</td>
                   <td class="num">${doc.page_count ?? '—'}</td>
-                  <td>${doc.has_text_layer === false
-                        ? '<span class="badge warn">none — OCR needed</span>'
-                        : '<span class="badge ok">present</span>'}</td>
-                </tr>`).join('')}</tbody></table></div>` : '';
+                  <td class="num">${fmtNumber(doc.chunk_count)}</td>
+                  <td class="num">${fmtNumber(doc.mention_count)}</td>
+                  <td class="num">${fmtNumber(doc.graph_nodes_created)}</td>
+                  <td class="num">${doc.processing_ms != null ? `${fmtNumber(doc.processing_ms)} ms` : '—'}</td>
+                  <td>${provBadge(doc.data_class)}</td>
+                </tr>`;
+              }).join('')}</tbody></table></div>` : '';
           const reviews = job.review_queue.length ? `
             <h4 style="margin-top:14px">Review queue (${job.review_queue.length})</h4>
             <p class="small muted">Ambiguous resolutions are surfaced rather than guessed.</p>
@@ -325,10 +357,25 @@
               ${job.stage ? `<span class="small muted"><span class="spinner"></span> ${esc(job.stage)}</span>` : ''}
             </div>
             <div class="grid cols-4" style="margin-bottom:12px">
+              <div class="metric"><div class="metric-label">Pages</div><div class="metric-value">${fmtNumber(job.pages)}</div>
+                <div class="metric-foot">${fmtNumber(job.documents.length)} document(s)</div></div>
               <div class="metric"><div class="metric-label">Chunks</div><div class="metric-value">${fmtNumber(job.chunks_created)}</div></div>
-              <div class="metric"><div class="metric-label">Mentions</div><div class="metric-value">${fmtNumber(job.mentions_created)}</div></div>
-              <div class="metric"><div class="metric-label">New assets</div><div class="metric-value">${fmtNumber(job.entities_created)}</div></div>
-              <div class="metric"><div class="metric-label">Graph edges</div><div class="metric-value">${fmtNumber(job.edges_created)}</div></div>
+              <div class="metric"><div class="metric-label">Entities extracted</div><div class="metric-value">${fmtNumber(job.mentions_created)}</div>
+                <div class="metric-foot">${fmtNumber(job.entities_created)} new canonical asset(s)</div></div>
+              <div class="metric"><div class="metric-label">Graph nodes</div><div class="metric-value">${fmtNumber(job.graph_nodes_created)}</div>
+                <div class="metric-foot">${fmtNumber(job.edges_created)} edge(s)</div></div>
+            </div>
+            <div class="grid cols-3" style="margin-bottom:12px">
+              <div class="metric"><div class="metric-label">Duration</div>
+                <div class="metric-value">${job.duration_ms != null ? `${(job.duration_ms / 1000).toFixed(1)}s` : '—'}</div>
+                <div class="metric-foot">${fmtNumber(job.processing_ms)} ms processing</div></div>
+              <div class="metric"><div class="metric-label">Facts extracted</div>
+                <div class="metric-value">${fmtNumber(job.extractions_verified)}</div>
+                <div class="metric-foot" title="Every asserted fact must be supported by a span that literally occurs in the source.">
+                  of ${fmtNumber(job.extractions_total)} with a verified verbatim span</div></div>
+              <div class="metric"><div class="metric-label">Failed / duplicate</div>
+                <div class="metric-value">${fmtNumber(job.failed)} / ${fmtNumber(job.skipped_duplicates)}</div>
+                <div class="metric-foot">deduplicated by SHA-256 content hash</div></div>
             </div>
             ${docs}
             <h4 style="margin-top:14px">Stage report</h4>

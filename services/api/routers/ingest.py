@@ -196,9 +196,20 @@ async def get_job(job_id: str) -> IngestJobResponse:
         raise NotFoundError(f"No ingestion job with id {job_id}.")
 
     documents = await db.fetch_all(
-        "SELECT doc_id, title, doc_type::text AS doc_type, data_class::text AS data_class, "
-        "page_count, has_text_layer, byte_size, created_at "
-        "FROM documents WHERE ingest_job_id = %s ORDER BY created_at",
+        """
+        SELECT doc_id, original_filename, title,
+               doc_type::text   AS doc_type,
+               doc_type_confidence, doc_type_method,
+               data_class::text AS data_class,
+               page_count, has_text_layer, byte_size, created_at,
+               parser, ocr_engine, ocr_mean_confidence, ocr_word_count,
+               vector_objects, is_drawing, tables_found,
+               processing_ms, chunk_count, mention_count,
+               graph_nodes_created, graph_edges_created, ingest_error
+          FROM documents
+         WHERE ingest_job_id = %s
+         ORDER BY created_at
+        """,
         (job_id,),
     )
     reviews = await db.fetch_all(
@@ -206,6 +217,26 @@ async def get_job(job_id: str) -> IngestJobResponse:
         "FROM review_queue r JOIN documents d ON d.doc_id = r.doc_id "
         "WHERE d.ingest_job_id = %s AND r.resolved_at IS NULL "
         "ORDER BY r.created_at DESC LIMIT 100",
+        (job_id,),
+    )
+
+    totals = await db.fetch_one(
+        """
+        SELECT coalesce(sum(processing_ms), 0)::int       AS processing_ms,
+               coalesce(sum(page_count), 0)::int          AS pages,
+               coalesce(sum(graph_nodes_created), 0)::int AS graph_nodes
+          FROM documents WHERE ingest_job_id = %s
+        """,
+        (job_id,),
+    )
+    extraction_stats = await db.fetch_one(
+        """
+        SELECT count(*)::int                                   AS total,
+               count(*) FILTER (WHERE quote_verified)::int     AS verified
+          FROM extractions e
+          JOIN documents d ON d.doc_id = e.doc_id
+         WHERE d.ingest_job_id = %s
+        """,
         (job_id,),
     )
 
@@ -240,6 +271,12 @@ async def get_job(job_id: str) -> IngestJobResponse:
             )
             for r in reviews
         ],
+        pages=int(totals["pages"]) if totals else 0,
+        graph_nodes_created=int(totals["graph_nodes"]) if totals else 0,
+        processing_ms=int(totals["processing_ms"]) if totals else 0,
+        duration_ms=_duration_ms(row),
+        extractions_total=int(extraction_stats["total"]) if extraction_stats else 0,
+        extractions_verified=int(extraction_stats["verified"]) if extraction_stats else 0,
         error=row["error"],
         created_at=row["created_at"],
         started_at=row["started_at"],
@@ -262,6 +299,19 @@ async def list_jobs(limit: int = 20) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _duration_ms(row: dict[str, Any]) -> int | None:
+    """Wall-clock duration of the job, when it has actually finished.
+
+    Distinct from the summed per-document processing time: a job also spends
+    time queued and moving between documents, and reporting one as the other
+    would overstate throughput.
+    """
+    started, finished = row.get("started_at"), row.get("finished_at")
+    if not started or not finished:
+        return None
+    return int((finished - started).total_seconds() * 1000)
 
 
 def _blob_entry(blob: storage.StoredBlob, *, source_path: str | None) -> dict[str, Any]:

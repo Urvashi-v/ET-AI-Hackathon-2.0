@@ -3,6 +3,9 @@ pytest==8.3.4
 pytest-asyncio==0.25.2
 ruff==0.8.6
 mypy==1.14.1
+# Used only by data/synthetic/generate_pdfs.py to produce real PDF files for the
+# parser and OCR paths. Not a runtime dependency.
+reportlab==4.2.5
 # NOTE: no types-redis. It is stubs for redis-py 4.x, is deprecated upstream, and
 # shadows the inline types that redis-py 5.x ships (it marks itself py.typed).
 # Installing it makes mypy reject `aclose()`, which exists at runtime.

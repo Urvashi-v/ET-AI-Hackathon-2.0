@@ -189,6 +189,7 @@ def classify(
     page_count: int | None = None,
     has_text_layer: bool | None = None,
     vector_segment_count: int | None = None,
+    drawing_signature: bool = False,
 ) -> Classification:
     """Route a document.
 
@@ -230,17 +231,21 @@ def classify(
     # 3. A PDF with no text layer is a scan.
     scanned = has_text_layer is False or (ext == ".pdf" and len(lowered.strip()) < 40)
 
-    # 4. Drawing signature: dense vector geometry, sparse text.
-    if vector_segment_count is not None and vector_segment_count > 400 and len(lowered) < 4000:
+    # 4. Drawing signature, measured by the parser at parse time: dense vector
+    #    geometry carrying almost no text. This is the signal that separates a
+    #    P&ID from "a PDF", and it is only available from the parser -- the
+    #    keyword rules below cannot see geometry at all.
+    if drawing_signature:
         return Classification(
             doc_type=DocumentType.PID,
-            confidence=0.8,
+            confidence=0.85,
             method="vector_density",
             pipeline="drawing",
             needs_ocr=scanned,
             notes=(
-                f"{vector_segment_count} vector segments with sparse text: drawing signature. "
-                "Topology reconstruction requires the drawing CV pipeline."
+                f"{vector_segment_count or 0} vector objects carrying {len(lowered)} characters "
+                "of text: drawing signature. Text is indexed for search, but topology "
+                "reconstruction requires the drawing CV pipeline, which is not implemented."
             ),
         )
 

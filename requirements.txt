@@ -11,7 +11,21 @@ structlog==24.4.0
 orjson==3.10.13
 httpx==0.28.1
 tenacity==9.0.0
+# --- document understanding ---
+# pdfplumber (over pdfminer.six) is the parser of record: it yields word-level
+# bounding boxes, ruled-table structure, and vector-object counts. pypdf remains
+# for the cheap encryption/metadata probe.
+pdfplumber==0.11.4
 pypdf==5.1.0
 python-docx==1.1.2
+# --- OCR ---
+# pypdfium2 renders PDF pages to raster for the scanned path. BSD/Apache, with
+# bundled binaries, so it needs no system libraries (unlike pdf2image+poppler).
+# pytesseract drives the tesseract binary installed in the image; it returns
+# per-word bounding boxes and per-word confidence, which is what the provenance
+# contract requires. Both are inert unless OCR_PROVIDER is set.
+pypdfium2==4.30.0
+pytesseract==0.3.13
+Pillow==11.0.0
 rapidfuzz==3.11.0
 numpy==2.2.1

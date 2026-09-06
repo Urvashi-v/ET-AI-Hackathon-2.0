@@ -271,6 +271,89 @@ class TestIngestionContract:
         assert client.get("/api/v1/ingest/job_does_not_exist").status_code == 404
 
 
+class TestIngestionProvenance:
+    """Day 2: what the write path must be able to prove about what it read."""
+
+    def _documents(self, client):
+        jobs = client.get("/api/v1/ingest?limit=10").json()["items"]
+        docs = []
+        for job in jobs:
+            docs.extend(client.get(f"/api/v1/ingest/{job['job_id']}").json()["documents"])
+        if not docs:
+            pytest.skip("no documents ingested yet")
+        return docs
+
+    def test_every_document_records_which_parser_read_it(self, client):
+        for doc in self._documents(client):
+            assert doc["parser"], f"{doc['original_filename']} does not say how it was parsed"
+
+    def test_a_scanned_document_records_its_ocr_engine_and_confidence(self, client):
+        scans = [d for d in self._documents(client) if d["ocr_engine"]]
+        if not scans:
+            pytest.skip("no OCR-processed document in this corpus")
+        for doc in scans:
+            assert 0.0 < doc["ocr_mean_confidence"] <= 1.0
+            assert doc["ocr_word_count"] > 0
+            # Recognised characters are not read characters, and the record says so.
+            assert doc["has_text_layer"] is False
+
+    def test_a_text_layer_document_claims_no_ocr(self, client):
+        read = [d for d in self._documents(client) if d["has_text_layer"]]
+        if not read:
+            pytest.skip("no text-layer document in this corpus")
+        for doc in read:
+            assert doc["ocr_engine"] is None
+
+    def test_a_drawing_is_flagged_with_the_evidence_behind_the_verdict(self, client):
+        drawings = [d for d in self._documents(client) if d["is_drawing"]]
+        if not drawings:
+            pytest.skip("no drawing in this corpus")
+        for doc in drawings:
+            assert doc["vector_objects"] > 0
+            assert doc["doc_type"] == "pid"
+
+    def test_every_document_reports_its_processing_time_and_counts(self, client):
+        for doc in self._documents(client):
+            assert doc["processing_ms"] is not None and doc["processing_ms"] >= 0
+            assert doc["chunk_count"] >= 0
+            assert doc["graph_nodes_created"] >= 0
+
+    def test_job_totals_are_real_aggregates(self, client):
+        jobs = client.get("/api/v1/ingest?limit=5").json()["items"]
+        if not jobs:
+            pytest.skip("no ingestion jobs")
+        job = client.get(f"/api/v1/ingest/{jobs[0]['job_id']}").json()
+        assert job["pages"] == sum((d["page_count"] or 0) for d in job["documents"])
+        assert job["graph_nodes_created"] == sum(d["graph_nodes_created"] for d in job["documents"])
+
+    def test_extraction_counts_are_reported(self, client):
+        jobs = client.get("/api/v1/ingest?limit=5").json()["items"]
+        if not jobs:
+            pytest.skip("no ingestion jobs")
+        job = client.get(f"/api/v1/ingest/{jobs[0]['job_id']}").json()
+        assert job["extractions_verified"] <= job["extractions_total"]
+
+
+class TestChunkProvenance:
+    def test_citations_carry_the_page_they_came_from(self, client):
+        body = client.post(
+            "/api/v1/query", json={"question": "What PPE is required for P-101B?"}
+        ).json()
+        if not body["citations"]:
+            pytest.skip("no citations returned")
+        assert any(c["page"] is not None for c in body["citations"])
+
+    def test_a_citation_resolves_to_a_real_chunk(self, client):
+        body = client.post(
+            "/api/v1/query", json={"question": "Why does P-101B keep failing?"}
+        ).json()
+        if not body["citations"]:
+            pytest.skip("no citations returned")
+        for citation in body["citations"]:
+            assert citation["chunk_id"].startswith("chk_")
+            assert citation["snippet"]
+
+
 class TestAgentsAndCompliance:
     def test_rca_returns_real_evidence_and_no_invented_tree(self, client):
         body = client.post(

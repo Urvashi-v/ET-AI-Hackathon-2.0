@@ -102,8 +102,71 @@ _QUANTITY = re.compile(
     re.I,
 )
 
+#: Failure vocabulary mapped to the ISO 14224-style failure-mode codes seeded in
+#: the graph. Deterministic, and that is the point.
+#:
+#: The structured field lies and the free text tells the truth. Failure codes are
+#: picked from a dropdown by a tired technician at the end of a shift and default
+#: to whatever is first in the list; the diagnostic information -- "found seal
+#: face scored, suspect dry running during startup" -- is in the long-text field.
+#: This table recovers the mode from the technician's own words, so the coded
+#: field and the narrative can be compared and the disagreement surfaced.
+#:
+#: Phrases are matched longest-first so "vibration high" wins over "vibration".
+FAILURE_TERMS: dict[str, tuple[str, float]] = {
+    # (phrase) -> (ISO 14224-style code, confidence)
+    "seal leak": ("ELP", 0.9),
+    "seal leakage": ("ELP", 0.9),
+    "seal failure": ("ELP", 0.9),
+    "seal faces scored": ("ELP", 0.95),
+    "seal face scored": ("ELP", 0.95),
+    "mechanical seal failed": ("ELP", 0.95),
+    "gland leak": ("ELP", 0.8),
+    "external leakage": ("ELP", 0.85),
+    "process leak": ("ELP", 0.8),
+    "internal leakage": ("INL", 0.85),
+    "passing valve": ("INL", 0.75),
+    "high vibration": ("VIB", 0.9),
+    "vibration high": ("VIB", 0.9),
+    "excessive vibration": ("VIB", 0.9),
+    "vibration increased": ("VIB", 0.85),
+    "abnormal noise": ("NOI", 0.8),
+    "unusual noise": ("NOI", 0.8),
+    "bearing failure": ("BRD", 0.9),
+    "bearing pitted": ("BRD", 0.9),
+    "bearing seized": ("BRD", 0.95),
+    "overheating": ("OHE", 0.85),
+    "running hot": ("OHE", 0.8),
+    "temperature rising": ("OHE", 0.7),
+    "failed to start": ("FTS", 0.9),
+    "fail to start": ("FTS", 0.9),
+    "would not start": ("FTS", 0.85),
+    "tripped on start": ("FTS", 0.8),
+    "low discharge pressure": ("LOO", 0.85),
+    "low flow": ("LOO", 0.8),
+    "reduced output": ("LOO", 0.8),
+    "cavitation": ("LOO", 0.85),
+    "choked": ("PLU", 0.85),
+    "plugged": ("PLU", 0.85),
+    "fouled": ("PLU", 0.75),
+    "wall loss": ("CORR", 0.9),
+    "corrosion": ("CORR", 0.85),
+    "wall thinning": ("CORR", 0.9),
+    "pitting": ("CORR", 0.8),
+    "cracked": ("STD", 0.85),
+    "crack indication": ("STD", 0.85),
+    "structural deficiency": ("STD", 0.85),
+    "erratic reading": ("AOH", 0.8),
+    "instrument drift": ("AOH", 0.8),
+}
+
+#: Codes a CMMS dropdown offers that carry no diagnostic content. When the coded
+#: field is one of these and the free text yields a real mode, that gap is the
+#: finding.
+UNINFORMATIVE_FAILURE_CODES = {"OTHER", "MISC", "UNKNOWN", "NA", "N/A", "", "UNK"}
+
 #: Degradation language -- the leading indicator mined from maintenance text.
-#: Weights are the documented judgement of how strongly each phrase signals an
+#: Weights are the documented judgement of how strongly each phrase signals a
 #: developing failure; they are configuration, not measurement, and the API
 #: labels any score derived from them as model_derived.
 DEGRADATION_CUES: dict[str, float] = {
@@ -170,6 +233,7 @@ class ExtractionResult:
     quantities: list[dict[str, Any]] = field(default_factory=list)
     degradation_cues: list[dict[str, Any]] = field(default_factory=list)
     functional_locations: list[dict[str, Any]] = field(default_factory=list)
+    failure_terms: list[dict[str, Any]] = field(default_factory=list)
 
     def counts(self) -> dict[str, int]:
         return {
@@ -180,6 +244,7 @@ class ExtractionResult:
             "quantities": len(self.quantities),
             "degradation_cues": len(self.degradation_cues),
             "functional_locations": len(self.functional_locations),
+            "failure_terms": len(self.failure_terms),
         }
 
 
@@ -367,6 +432,8 @@ def extract_all(text: str, *, gazetteer: dict[str, str] | None = None) -> Extrac
             }
         )
 
+    result.failure_terms = extract_failure_terms(text)
+
     lowered = text.lower()
     for cue, weight in DEGRADATION_CUES.items():
         idx = lowered.find(cue)
@@ -381,6 +448,99 @@ def extract_all(text: str, *, gazetteer: dict[str, str] | None = None) -> Extrac
             )
 
     return result
+
+
+def extract_failure_terms(text: str) -> list[dict[str, Any]]:
+    """Recover ISO 14224-style failure modes from free maintenance text.
+
+    Longest phrase first, and overlapping matches suppressed, so "seal faces
+    scored" is not also reported as the weaker "seal leak". Every match carries
+    the verbatim span it came from, so the assertion is checkable against the
+    source rather than merely plausible.
+    """
+    lowered = text.lower()
+    found: list[dict[str, Any]] = []
+    claimed: list[tuple[int, int]] = []
+
+    for phrase in sorted(FAILURE_TERMS, key=len, reverse=True):
+        code, confidence = FAILURE_TERMS[phrase]
+        start = 0
+        while (index := lowered.find(phrase, start)) != -1:
+            span = (index, index + len(phrase))
+            start = span[1]
+            if any(_overlaps(span, taken) for taken in claimed):
+                continue
+            claimed.append(span)
+            found.append(
+                {
+                    "failure_mode_code": code,
+                    "phrase": phrase,
+                    "quote": text[span[0] : span[1]],
+                    "char_start": span[0],
+                    "char_end": span[1],
+                    "confidence": confidence,
+                    "extractor": "gazetteer:iso14224",
+                }
+            )
+
+    return sorted(found, key=lambda f: f["char_start"])
+
+
+def compare_coded_and_extracted(
+    coded_mode: str | None, extracted: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """Compare the CMMS-coded failure mode with what the text actually says.
+
+    Three outcomes worth distinguishing:
+
+    ``agree``          the code and the narrative say the same thing
+    ``recoded``        the code carries no information ("OTHER") but the text does
+    ``disagree``       both say something, and they differ -- surfaced, not resolved
+
+    Disagreement is reported rather than silently overridden. The coded field is
+    what the plant's own records assert; replacing it without saying so would be
+    the same failure the system exists to prevent.
+    """
+    best = max(extracted, key=lambda f: f["confidence"], default=None)
+    coded = (coded_mode or "").strip().upper()
+    coded_is_useful = coded not in UNINFORMATIVE_FAILURE_CODES
+
+    if best is None:
+        return {
+            "verdict": "no_text_evidence",
+            "coded_mode": coded or None,
+            "extracted_mode": None,
+            "detail": "The narrative contains no recognised failure vocabulary.",
+        }
+    if not coded_is_useful:
+        return {
+            "verdict": "recoded",
+            "coded_mode": coded or None,
+            "extracted_mode": best["failure_mode_code"],
+            "evidence_quote": best["quote"],
+            "confidence": best["confidence"],
+            "detail": (
+                f"The coded field is {coded or 'empty'}, which carries no diagnostic "
+                f"content. The technician's own words indicate "
+                f"{best['failure_mode_code']}."
+            ),
+        }
+    agrees = coded.startswith(best["failure_mode_code"]) or best["failure_mode_code"] in coded
+    return {
+        "verdict": "agree" if agrees else "disagree",
+        "coded_mode": coded,
+        "extracted_mode": best["failure_mode_code"],
+        "evidence_quote": best["quote"],
+        "confidence": best["confidence"],
+        "detail": (
+            "The coded field and the narrative agree."
+            if agrees
+            else (
+                f"The coded field says {coded} but the narrative indicates "
+                f"{best['failure_mode_code']}. Both are recorded; neither is overwritten."
+            )
+        ),
+    }
 
 
 def validate_extraction(

@@ -9,8 +9,13 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
+# tesseract-ocr is the OCR engine for the scanned-document path. It is a real,
+# offline engine: no credentials, and no network call at run time. That second
+# property matters beyond convenience -- it is what keeps the air-gapped
+# deployment story intact. It is only invoked when OCR_PROVIDER=tesseract.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends curl ca-certificates \
+ && apt-get install -y --no-install-recommends \
+      curl ca-certificates tesseract-ocr tesseract-ocr-eng \
  && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt /app/requirements.txt

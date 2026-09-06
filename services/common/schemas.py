@@ -219,6 +219,16 @@ class IngestJobResponse(BaseModel):
     mentions_created: int
     entities_created: int
     edges_created: int
+    #: Pages across every document in the job.
+    pages: int = 0
+    graph_nodes_created: int = 0
+    #: Summed per-document processing time.
+    processing_ms: int = 0
+    #: Wall-clock duration from job start to finish. Larger than the sum above,
+    #: because a job also spends time queued and between documents.
+    duration_ms: int | None = None
+    extractions_total: int = 0
+    extractions_verified: int = 0
     stage_reports: list[StageReport] = Field(default_factory=list)
     documents: list[dict[str, Any]] = Field(default_factory=list)
     review_queue: list[ReviewItem] = Field(default_factory=list)

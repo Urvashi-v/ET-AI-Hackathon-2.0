@@ -25,6 +25,7 @@ data/corpus/**/*
 !data/corpus/SOURCES.md
 !data/corpus/MANIFEST.schema.json
 data/synthetic/generated/
+data/synthetic/generated_pdf/
 data/uploads/
 data/blobs/
 
