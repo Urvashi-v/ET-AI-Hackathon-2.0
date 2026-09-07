@@ -7,96 +7,111 @@ a provenance-carrying knowledge graph, and hybrid retrieval — with the five
 capabilities from the brief built as query patterns over it rather than as five
 separate demos.
 
-**Day 5 of the build.** This README separates what runs from what does not. See
+**Day 6 of the build.** This README separates what runs from what does not. See
 [Feature status](#feature-status).
 
 ---
 
 ## Measured results
 
-Produced by `python eval/run_eval.py` against a live stack, over 25 golden
-questions and the 11-document corpus described below. Re-runnable; every run is
-saved to `eval/results/` with the configuration it ran under.
+Produced by `python eval/run_eval.py` against a live stack: **55 golden
+questions** (16.4% deliberately unanswerable), a hand-labelled entity reference
+set, and the live graph. Every run is saved to `eval/results/` with the
+configuration it ran under; `python eval/compare_runs.py` diffs any two.
 
-| Metric | Value | Notes |
+Run: `20260907T150201Z-day6-final`.
+
+| Metric | Result | Method |
 |---|---|---|
-| Context recall (answerable) | **0.952** | did retrieval reach the documents the question needs |
-| Context precision | 0.410 | 8 passages returned per question, after cross-encoder reranking |
-| Entity recall | 0.844 | asset tags correctly linked from the question |
-| Intent routing accuracy | 0.840 | deterministic rule classifier |
-| **Abstention recall on unanswerable** | **0.750** | 4 deliberately unanswerable questions; 3 refused |
-| **False abstention rate** | **0.095** | 2 of 21 answerable questions withheld — the cost side of abstaining |
-| Abstentions naming a referral | 1.000 | never a bare refusal — names what's missing and who owns it |
-| Mention resolution rate | 100% | 101 mentions, all resolved to a canonical asset |
-| Cross-system assets | 46.7% | assets evidenced by more than one *source system* |
-| Revision series reconciled | 5 | 1 with a real supersession chain, 0 needing human resolution |
-| p50 / p95 latency | 1.90 s / 2.39 s | end-to-end; the cross-encoder is most of it |
-| Extractions with a verified verbatim span | **100%** | every asserted fact traces to text that literally occurs in the source |
-| OCR mean confidence | 0.95 | 203 words recovered from the scanned document |
-| Answer correctness | **not measurable** | no LLM configured; extraction answers, but correctness needs a grader |
+| **Entity precision** | **0.929** | 11 hand-labelled documents, `eval/entities.jsonl` |
+| **Entity recall** | **0.907** | same reference set |
+| **Entity F1** | **0.918** | micro-averaged; 39 TP / 3 FP / 4 FN |
+| **Citation validity** | **1.000** | 440/440 cited chunks re-fetched and snippets verified against stored text |
+| **Groundedness** | **1.000** | 170/170 answer claims verbatim in the passage they cite |
+| **Answer correctness** | **Not measured** | needs a judge; none configured — see below |
+| Context recall | 0.956 | golden set, answerable questions |
+| Context precision | 0.427 | 8 passages returned per question |
+| Intent routing accuracy | 0.836 | deterministic rule classifier |
+| **Abstention recall (unanswerable)** | **0.667** | 9 unanswerable questions; 6 refused |
+| **False abstention rate** | **0.109** | 5 of 46 answerable questions withheld |
+| Abstentions naming a referral | 1.000 | never a bare refusal |
+| **Compliance gap detection** | **1.000** | 13/13 hand-determined verdicts, `eval/compliance_expectations.jsonl` |
+| **Mention resolution** | **1.000** | every extracted tag reached a canonical asset |
+| **Drawing tag linkage** | **1.000** | every tag detected on the P&ID resolved to an asset |
+| Cross-system assets | 0.438 | evidenced by more than one source system |
+| Review queue open | 0 | ambiguous resolutions awaiting a human |
+| **Latency p50 / p95** | **2.85 s / 6.52 s** | 55-question benchmark, cold cache |
+| Time-to-answer improvement | **Not measured** | protocol written, study **NOT YET RUN** — `docs/time-to-answer.md` |
 
-Per category:
+### Reading these honestly
 
-| Category | n | ctx recall | intent | abstained |
-|---|---|---|---|---|
-| lookup | 5 | 1.000 | 1.000 | 0.000 |
-| procedural | 4 | 1.000 | 1.000 | 0.000 |
-| aggregate | 3 | 1.000 | 1.000 | 0.000 |
-| diagnostic | 3 | 1.000 | 0.333 | 0.000 |
-| multi_hop | 3 | 1.000 | 1.000 | 0.333 |
-| comparative | 3 | 0.667 | 0.333 | 0.333 |
-| unanswerable | 4 | n/a | 1.000 | 0.750 |
+**Two rows are pairs, not standalone numbers.** Abstention recall (0.667) and
+false abstention (0.109) can each be driven to a perfect score by a system that
+always or never refuses; only together do they say anything. Likewise entity
+precision and recall: reporting recall alone would hide invented equipment.
 
-Corpus behind those numbers: 11 documents (4 real PDFs, 2 CSV exports, 5
-Markdown) → 98 chunks → 101 mentions → 15 canonical assets → 2 incidents,
-5 corrective actions, 1 management-of-change record, 20 requirements.
+**Answer correctness is `not_measured`, not zero.** The extractive answerer
+produces real cited answers with no credential, but grading them against a
+reference needs a judge — a human or a capable LLM — and neither is configured. A
+string-overlap score presented as accuracy would be worse than no number.
 
-### Agent capabilities, measured on P-101B
+**p95 is 6.52 s and misses a sub-2-second target.** The cross-encoder is
+essentially all of it: p95 of 6.10 s against 0.35 s for dense, 0.35 s for graph
+and 0.17 s for lexical. Two things are true about that — it is a 6-layer
+transformer scoring 25 candidates on a container CPU with no GPU, and the host is
+Docker Desktop on Windows where the same query has measured anywhere from 2.9 s
+to 11.4 s. The dials are `RERANK_CANDIDATES` and `ONNX_THREADS`; a repeated
+question is served from cache in ~130 ms. The measured number is printed rather
+than the target.
 
-Produced by `python scripts/demo_spine.py` against the live stack.
+**The corpus is 11 synthetic documents.** Every figure above is real and
+reproducible, and none of it establishes behaviour at plant scale.
 
-| Capability | Operational | What it produced |
-|---|---|---|
-| **RCA** | yes, no credential | 6 candidate causes ranked from 14 recorded statements; leading cause *dry running* with 5 records across 4 documents; MTBF 908.5 days; 2 open CAPAs surfaced from the sibling |
-| **Lessons learned** | yes, real embeddings | 2 incidents compared, both matched — 0.73 and 0.74 cosine, one on the same pump, one on the sibling; the sibling's 2 open actions listed |
-| **Compliance** | yes, evidence-backed | 20 requirements evaluated; on V-102: 4 satisfied, 5 gaps, 44.4% of 9 decidable. On P-101B: 5 gaps, 2 needing verification, 13 not evaluable |
-| **Proactive** | yes, event-driven | 4 notifications from one work-order event, each with its evidence and audience |
+### What the benchmark caught
 
-### P&ID digitisation, measured on the demo sheet
+The expanded set found three defects that the 25-question version did not:
 
-Produced by real ingestion of one A3 P&ID. No accuracy figure is claimed anywhere,
-because none has been measured against a labelled ground truth.
+1. **A tag-extraction bug that both invented and destroyed assets.** `T-101
+   P-101A` on the P&ID matched as a single tag `T-101 P` — creating equipment
+   that does not exist and swallowing the duty pump entirely. Entity precision
+   rose 0.848 → 0.929 when fixed.
+2. **A latency cliff.** p95 reached 17 s under sustained load. A reranker cache
+   keyed on the exact query and candidate set brought repeated questions to
+   ~130 ms and p95 to 6.52 s.
+3. **A dangerous shape of wrong answer.** "What is the current vibration reading
+   on P-101A?" returned a real, well-cited reading from 2023. Everything about it
+   was right except that it was two years stale. A live-state gate now refuses
+   present-tense measurement questions and says why; abstention recall rose
+   0.556 → 0.667.
 
-| Detector | Method | Training data | Result |
-|---|---|---|---|
-| Tag localisation | PDF word geometry + tag grammar | none | **12 tags, 11 linked to canonical assets** |
-| Instrument bubbles | `cv2.HoughCircles` | none | 14 circles, named from the tags inside them |
-| Process lines | `cv2.HoughLinesP`, merged into runs | none | 439 runs (857 raw segments merged) |
-| Topology | line endpoints touching symbols | none | 9 connections — a *lower bound*, not a complete topology |
-| Equipment symbols | needs a trained detector | **~200 sheets minimum** | **not implemented; nothing emitted** |
+Three of the harness's own metrics were also wrong and were fixed: intent
+expectations missing for two new categories, linkage reading a rate above 1, and
+compliance expectations that scoped a pressure-vessel clause to a heat exchanger.
+In that last case **the system was right and the reference set was wrong.**
 
-`HV-1502` and `T-101` are drawn on the sheet and match no asset in the corpus.
-That is reported, not hidden — it is the gap between what the plant has drawn and
-what it has recorded.
+Corpus behind these numbers: 11 documents (4 PDFs incl. one scanned and one
+P&ID, 2 CSV exports, 5 Markdown) → 98 chunks → 101 mentions → 15 canonical
+assets → 2 incidents, 5 corrective actions, 1 MOC, 20 requirements, 465 drawing
+detections.
 
-### Every surface reads the same backend
+---
 
-`python scripts/verify_surfaces.py` — **24 checks, 0 failures**. It asserts that
-the asset id the graph explorer resolves is the one the field view loads, that
-the documents the copilot cites appear in the graph neighbourhood, that the node
-count the ingestion chart draws is the one Neo4j reports, and that symbol
-detection is still declared unimplemented.
+## Business impact
 
-**Two rows deserve reading together.** Abstention recall and false abstention are
-a pair: either can be driven to a perfect score by a system that always abstains
-or never does, and only both together say anything. 0.750 / 0.095 means the
-system refuses three of four unanswerable questions while withholding one in ten
-answerable ones.
+`/ui/impact.html` — an ROI model where **every output is arithmetic over inputs
+you can change**, and every field is labelled `USER INPUT`, `ASSUMPTION`,
+`MEASURED` or `CALCULATED`.
 
-**Answer correctness stays `not_measurable`.** The extractive answerer produces
-real answers without a credential, but grading them against reference text needs
-a judge the project does not have. `not_measurable` rather than `0.0`, because a
-zero would imply the system tried and failed.
+The three inputs that drive most of the answer — manual search time, assisted
+search time, share of downtime avoidable — are **assumptions, not measurements**,
+and are labelled as such at the field, in the result, and in a banner. The study
+that would measure the first two is specified in `docs/time-to-answer.md` and
+**has not been run**.
+
+There is no hard-coded payback figure. Set time saved to zero and the benefit is
+zero; payback then reads "Never" rather than infinity. A sensitivity panel shows
+what happens when the assumptions are halved and doubled — on the defaults that
+range spans 55×, which is the honest width of the offer.
 
 ---
 
@@ -109,7 +124,10 @@ cp .env.example .env    # then set POSTGRES_PASSWORD and NEO4J_PASSWORD
 docker compose up -d --build
 
 python data/synthetic/generate.py        # CSV exports + Markdown reports
-python data/synthetic/generate_pdfs.py   # real PDFs, incl. an image-only scan
+# generate_pdfs.py needs reportlab, which is a dev-only dependency: it produces
+# the test PDFs, and the runtime image only needs to read them.
+pip install reportlab==4.2.5
+python data/synthetic/generate_pdfs.py   # real PDFs, incl. an image-only scan and a P&ID
 
 python scripts/ingest_dir.py data/synthetic/generated \
   --data-class synthetic_test_data --source-system synthetic_cmms --wait
@@ -123,8 +141,8 @@ Then open **http://localhost:8000** (API docs at `/docs`, Neo4j browser at
 ```bash
 docker compose exec api python scripts/load_requirements.py   # compliance corpus
 python eval/run_eval.py                                       # the numbers above
-python -m pytest -q -m "not integration"                      # 380 unit tests
-python -m pytest -q -m integration                            # 64 API tests
+python -m pytest -q -m "not integration"                      # 387 unit tests
+python -m pytest -q -m integration                            # 84 API + security tests
 ```
 
 The OCR tests skip unless `tesseract` is on your PATH. It is installed in the
@@ -132,6 +150,12 @@ image, so to run them where it lives:
 
 ```bash
 docker compose exec api sh -c "cd /app && python -m pytest tests/test_pdf_and_ocr.py -q"
+```
+
+Verify the whole thing from nothing:
+
+```bash
+./scripts/clean_start_test.sh     # destroys volumes, rebuilds, ingests, tests
 ```
 
 `make help` lists every target. On Windows without GNU make, run the commands
@@ -317,16 +341,19 @@ database/
               extension, extraction provenance + timing, revision lineage,
               drawing detections + connections
   cypher/     constraints and indexes · ontology seed
-web/          7 HTML pages · css/base.css ·
-              js/{api,ui,graphview,sourceviewer,drawingviewer,offline,voice}.js
+web/          8 HTML pages · css/base.css ·
+              js/{api,ui,graphview,sourceviewer,drawingviewer,offline,voice,roi}.js
 data/
   pid_training/ dataset structure for symbol detection (empty by design)
   corpus/     real documents (empty by design) + SOURCES.md + manifest schema
   synthetic/  deterministic generators (CSV/Markdown + real PDFs) + SCHEMA.md
   requirements/ atomised requirements with per-entry provenance
-eval/         golden.jsonl (25 questions) · run_eval.py · results/
-tests/        445 collected — 381 unit, 64 integration
-docs/         architecture · ontology · security · adr/
+eval/         golden.jsonl (55 questions) · entities.jsonl · 
+              compliance_expectations.jsonl · run_eval.py · metrics.py ·
+              compare_runs.py · results/
+tests/        472 collected — 388 unit, 84 integration (469 pass, 3 skip)
+docs/         architecture · ingestion · retrieval · agents · pid ·
+              ontology · security · roi · time-to-answer · adr/
 ```
 
 Languages, each with a real purpose: Python (services, eval, generators),
@@ -355,103 +382,116 @@ python eval/run_eval.py
 Stated plainly, because a limitation you name is worth more than one a reviewer
 finds.
 
-1. **Equipment-symbol detection is not implemented.** Tags, instrument bubbles
+1. **Latency p95 is 6.52 s, not the sub-2-second target.** The cross-encoder is
+   ~94% of it. Real, measured, and printed rather than the target — see the
+   measured-results section for the breakdown and the tuning dials.
+2. **Answer correctness is unmeasured.** No judge is configured, so groundedness
+   (1.000) is reported and correctness is not. Groundedness says the answer came
+   from the corpus; it does not say the answer is right.
+3. **Abstention recall is 0.667**, and the three misses are instructive: two ask
+   for a field a real document does not contain (a seal part number, a shift
+   roster), which lexical relevance cannot distinguish from a document that does.
+   The original four unanswerable questions still score 0.750 exactly as on
+   Day 3 — the rate fell because the benchmark got harder, not the system.
+4. **No time-to-answer study has been run.** The protocol exists; the ROI model
+   labels its time inputs as assumptions accordingly.
+5. **Equipment-symbol detection is not implemented.** Tags, instrument bubbles
    and pipe runs are detected without training data; classifying a pump against a
    vessel by silhouette is not. The dataset needed is specified in
    `data/pid_training/README.md` — ~200 annotated sheets minimum. The stage
    reports `not_implemented` and emits nothing.
-2. **Recovered P&ID topology is a lower bound.** Two symbols are connected only
+6. **Recovered P&ID topology is a lower bound.** Two symbols are connected only
    when one detected segment touches both. Collinear joining across symbol gaps,
    elbow following and process-versus-signal-line discrimination are not built,
    so the absence of a connection means nothing. Nine were recovered from the
    demo sheet.
-3. **No detection accuracy is measured.** There is no labelled ground truth for
+7. **No detection accuracy is measured.** There is no labelled ground truth for
    this drawing, so no mAP, precision or recall is reported for any detector. The
    counts are real; their correctness is unquantified.
-4. **Offline covers cached responses, not the system.** Retrieval, the graph, RCA
+8. **Offline covers cached responses, not the system.** Retrieval, the graph, RCA
    and compliance all run server-side. An asset never opened online is
    unavailable offline, and the UI says so rather than showing an empty page.
-5. **Voice input depends on the browser.** Absent in Firefox entirely; in Chrome
+9. **Voice input depends on the browser.** Absent in Firefox entirely; in Chrome
    it routes audio to a Google service. Both are stated in the UI rather than
    discovered.
-6. **RCA candidate causes are aggregated, not reasoned.** The agent ranks
+10. **RCA candidate causes are aggregated, not reasoned.** The agent ranks
    mechanisms that recorded evidence names. It does not build a causal *tree*
    down to a systemic cause, and it cannot infer a mechanism nobody wrote down.
    That is the deliberate trade for being unable to produce a confident RCA about
    a pump it has no evidence for.
-7. **Compliance decides 5 of 20 requirements for a pump.** The rest need a
+11. **Compliance decides 5 of 20 requirements for a pump.** The rest need a
    permit system (not connected), records the corpus does not hold, or human
    judgement on procedure text. Reported as `not_evaluable`, never as passing.
-8. **All 20 requirements are `paraphrase_for_demo`.** No verbatim regulatory text
+12. **All 20 requirements are `paraphrase_for_demo`.** No verbatim regulatory text
    is loaded, because none was supplied. The schema, provenance field and
    evaluation logic are real; the clause wording is not quotable and the API
    says so on every response.
-9. **Lessons learned has two incidents to compare against.** The four signals
+13. **Lessons learned has two incidents to compare against.** The four signals
    and the thresholds are real, but the discrimination they provide is barely
    exercised at this corpus size. More incident reports is the single highest-
    value data addition.
-10. **No abstractive generation without a credential, and correctness is
+14. **No abstractive generation without a credential, and correctness is
    therefore ungraded.** The extractive answerer produces real cited answers with
    no credential, so the copilot is not merely a search box. But grading answers
    against reference text needs a judge, so answer correctness is reported as
    `not_measurable` rather than as a number.
-11. **Extraction cannot combine two half-answers into one sentence.** It selects
+15. **Extraction cannot combine two half-answers into one sentence.** It selects
    sentences; it does not synthesise. A question whose answer is spread across
    two documents gets both sentences, not the synthesis a reader might want.
    That is the deliberate trade for being structurally unable to hallucinate.
-12. **False abstention rate is 0.095** — 2 of 21 answerable questions withheld.
+16. **False abstention rate is 0.095** — 2 of 21 answerable questions withheld.
    Both are vocabulary mismatches: the answer is correct but reuses none of the
    question's distinctive words ("which documents *describe* this location"),
    and the relevance measure is lexical. An entailment model would fix it; a
    lower threshold would only trade these for wrong answers.
-13. **One unanswerable question is answered with a caveat.** "What is the NPSH
+17. **One unanswerable question is answered with a caveat.** "What is the NPSH
    required for P-101B?" scores 0.36 relevance against a 0.34 floor, because the
    corpus genuinely *discusses* NPSH — an MOC notes the datasheet values no
    longer describe the machine — without stating the value. Nudging the floor to
    0.38 would score 4/4 and mean nothing; the threshold is set from measured
    separation, not from this question.
-14. **Comparative questions score 0.667 context recall** (3 questions). "Which of
+18. **Comparative questions score 0.667 context recall** (3 questions). "Which of
    the two pumps has more downtime?" names no parseable tag, so the graph leg has
    no anchor. Needs an aggregation router.
-15. **Diagnostic intent accuracy is 0.33** (3 questions). Two are phrased without a
+19. **Diagnostic intent accuracy is 0.33** (3 questions). Two are phrased without a
    causal marker. Deliberately *not* fixed by adding their exact wording to the
    rules — tuning a classifier to its own benchmark makes the benchmark
    meaningless.
-16. **Reranking is ~2.0 s of a ~3.1 s query.** A 6-layer cross-encoder over 25
+20. **Reranking is ~2.0 s of a ~3.1 s query.** A 6-layer cross-encoder over 25
    candidates on a container CPU. `RERANK_CANDIDATES` and `ONNX_THREADS` are the
    dials; a GPU or a smaller shortlist both help. Retrieval itself (BM25 + dense
    + graph) totals ~155 ms.
-17. **`Incident`, `MOC` and `CAPA` nodes are not created from prose.** The
+21. **`Incident`, `MOC` and `CAPA` nodes are not created from prose.** The
    documents ingest and link, but the structured nodes need the LLM extractor. So
    RCA reports `incidents: 0` for P-101B even though two incident reports about
    it are ingested and retrievable.
-18. **Bounding boxes are per block, not per sentence.** The source viewer does
+22. **Bounding boxes are per block, not per sentence.** The source viewer does
    highlight the cited sentence in the *extracted text*, but it locates it by
    string match, and the stored rectangle still surrounds the whole passage. So
    the rendered PDF page is shown without a box drawn on the cited line.
    Per-sentence geometry needs word offsets carried through chunk splitting,
    which is not done.
-19. **OCR reading order is good, not perfect.** Tesseract's `--psm 3` layout
+23. **OCR reading order is good, not perfect.** Tesseract's `--psm 3` layout
    analysis handles the corpus correctly, but a form with columns aligned across
    a page can still interleave. The per-word geometry needed to detect and fix
    that is stored; the correction is not written.
-20. **The P&ID is classified, not understood.** Vector density routes it to the
+24. **The P&ID is classified, not understood.** Vector density routes it to the
    drawing pipeline and its text layer is indexed, so tags on the sheet are
    searchable. Symbol detection, line tracing and topology reconstruction are
    not built, so `FEEDS` / `ISOLATES` edges do not exist.
 
-21. **One unresolved review item** in the demo corpus: `P-101` appears without an
+25. **One unresolved review item** in the demo corpus: `P-101` appears without an
    item suffix alongside `P-101A`/`P-101B`. It is flagged for review rather than
    silently asserted as a third pump — the intended behaviour, visible on the
    ingestion page.
-22. **Neo4j Community** has no `NODE KEY` constraints, so composite keys are
+26. **Neo4j Community** has no `NODE KEY` constraints, so composite keys are
     single-property unique constraints with existence enforced by the loader.
-23. **The corpus is synthetic content in real containers.** The PDFs are genuine
+27. **The corpus is synthetic content in real containers.** The PDFs are genuine
     PDF files — real text layers, real ruled tables, a real image-only scan, real
     vector geometry — but the plant they describe is invented and every page says
     so. Real industrial documents remain the single largest quality lever; see
     [data/corpus/SOURCES.md](data/corpus/SOURCES.md).
-24. **Not deployable.** No auth, no multi-tenancy, no PII redaction, no TLS, no
+28. **Not deployable.** No auth, no multi-tenancy, no PII redaction, no TLS, no
     rate limiting. See [docs/security.md](docs/security.md).
 
 ---
@@ -464,6 +504,8 @@ finds.
 * [docs/agents.md](docs/agents.md) — RCA, compliance, lessons learned, and the proactive path
 * [docs/pid.md](docs/pid.md) — P&ID digitisation: four detectors, what each can and cannot do
 * [docs/ontology.md](docs/ontology.md) — labels, edges, and which are populated today
-* [docs/security.md](docs/security.md) — what is enforced and what is not
+* [docs/security.md](docs/security.md) — what is enforced and what is not (19 tested boundaries)
+* [docs/time-to-answer.md](docs/time-to-answer.md) — study protocol, **NOT YET RUN**
+* [docs/roi.md](docs/roi.md) — the ROI model and why its assumptions are labelled
 * [docs/adr/0001-technology-choices.md](docs/adr/0001-technology-choices.md) — why each component, and what was rejected
 * `/docs` on the running API — OpenAPI, generated from the Pydantic contracts

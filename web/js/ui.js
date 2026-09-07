@@ -210,6 +210,7 @@ const NAV = [
   ['reliability.html', 'Reliability'],
   ['compliance.html', 'Compliance'],
   ['field.html', 'Field'],
+  ['impact.html', 'Business impact'],
 ];
 
 /** Mount the shared header. Also renders the live system-status pill. */

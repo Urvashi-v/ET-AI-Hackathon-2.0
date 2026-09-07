@@ -304,3 +304,59 @@ class TestClaimVerification:
         ), "whitespace-insensitive"
         assert not verify_quote("the limit is 12 barg", passage)
         assert not verify_quote("", passage)
+
+
+class TestLiveStateGate:
+    """Questions about what a sensor reads *now* cannot be answered from documents.
+
+    The dangerous case, and the reason this gate exists: the corpus contains a
+    2023 vibration reading. Asked for the *current* vibration it retrieves
+    beautifully, cites correctly, and returns a value that is two years stale.
+    Everything about that answer is right except that it is out of date, which is
+    the hardest kind of wrong answer to notice.
+    """
+
+    def test_present_tense_measurement_is_detected(self) -> None:
+        from services.retrieval.intent import asks_for_live_state
+
+        assert asks_for_live_state("What is the current vibration reading on P-101A?")
+        assert asks_for_live_state("What is the latest temperature on E-104?")
+        assert asks_for_live_state("What is the real-time flow through V-102?")
+
+    def test_document_currency_is_not_gated(self) -> None:
+        """"Which revision is current?" must still be answered.
+
+        Currency of a procedure is exactly what this system is good at, and a
+        gate that catches it would remove a capability to fix a different one.
+        """
+        from services.retrieval.intent import asks_for_live_state
+
+        assert not asks_for_live_state("Which revision of SOP-4412 is current?")
+        assert not asks_for_live_state("What is the current revision of the P&ID?")
+
+    def test_historical_measurements_are_not_gated(self) -> None:
+        from services.retrieval.intent import asks_for_live_state
+
+        assert not asks_for_live_state("What was the vibration reading in 2019?")
+        assert not asks_for_live_state("What is the discharge pressure limit?")
+
+    def test_the_gate_caps_confidence(self) -> None:
+        from services.common.schemas import ConfidenceMode
+        from services.retrieval.confidence import ConfidenceInputs, score
+
+        report = score(
+            ConfidenceInputs(
+                top_score=0.9,
+                distinct_documents=4,
+                distinct_source_systems=2,
+                current_documents=4,
+                total_documents=4,
+                graph_facts=10,
+                total_claims=4,
+                verified_claims=4,
+                answer_relevance=1.0,
+                wants_live_state=True,
+            )
+        )
+        assert report.mode is ConfidenceMode.ABSTAIN_AND_ROUTE
+        assert "live process data" in report.explanation

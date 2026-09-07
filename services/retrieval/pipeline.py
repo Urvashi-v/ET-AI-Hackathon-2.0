@@ -188,6 +188,7 @@ async def answer_question(
             answer_relevance=answer.relevance,
             missing_terms=answer.missing_terms,
             unknown_terms=unknown_terms,
+            wants_live_state=understanding.wants_live_state,
             score_scale=("reranker" if rerank_leg.state is CapabilityState.AVAILABLE else "fusion"),
         )
     )
@@ -232,19 +233,70 @@ async def answer_question(
     )
 
     await _log_query(response, understanding, ranked_lists)
+    # One structured line per query, carrying everything needed to diagnose it
+    # without reproducing it. The request id is bound by middleware, so this line
+    # joins to the HTTP access log and to every other line the request emitted.
+    #
+    # Nothing here is a secret. Provider *names* are logged and credentials never
+    # are -- the question "which model answered this?" is operationally essential
+    # and "with which key?" is never asked of a log.
     log.info(
         "query.answered",
         query_id=query_id,
+        # --- what was asked -------------------------------------------------
         intent=understanding.intent.value,
-        mode=report.mode.value,
-        confidence=report.score,
+        intent_confidence=round(understanding.intent_confidence, 3),
+        intent_method=understanding.method,
+        sub_questions=len(understanding.sub_questions),
+        entities=[e.get("canonical_tag") for e in understanding.entities],
+        # --- what retrieval did ---------------------------------------------
+        retrieval_sources=response.retrieval_sources,
+        candidates={
+            (leg.leg_id or leg.strategy): leg.candidates for leg in legs
+        },
+        leg_state={(leg.leg_id or leg.strategy): leg.state.value for leg in legs},
+        leg_latency_ms={
+            (leg.leg_id or leg.strategy): round(leg.elapsed_ms, 1) for leg in legs
+        },
+        rerank_state=rerank_leg.state.value,
+        rerank_candidates=rerank_leg.candidates,
+        rerank_ms=round(rerank_leg.elapsed_ms, 1),
+        # --- what was answered ----------------------------------------------
         answer_method=answer.method,
+        answer_provider=_answer_provider(answer.method),
+        model_latency_ms=round(answer.elapsed_ms, 1),
         citations=len(citations),
         claims=len(response.claims),
+        verified_claims=answer.verified_claims,
         graph_facts=len(response.graph_facts),
+        # --- how it was judged ----------------------------------------------
+        confidence=report.score,
+        confidence_mode=report.mode.value,
+        abstained=abstained,
+        signals=report.signals,
+        # --- what went wrong -------------------------------------------------
+        errors=[
+            {"stage": leg.leg_id or leg.strategy, "detail": (leg.detail or "")[:160]}
+            for leg in legs
+            if leg.state is CapabilityState.ERROR
+        ],
         latency_ms=latency_ms,
     )
     return response
+
+
+def _answer_provider(method: str | None) -> str:
+    """Which component produced the answer text.
+
+    The provider *name*, never its credential. Distinguishing an extractive
+    answer from an LLM one is the first question asked when an answer is
+    disputed, and it cannot be recovered from the text after the fact.
+    """
+    if method == "abstractive":
+        return f"llm:{get_settings().llm_provider}"
+    if method == "extractive":
+        return "extractive:deterministic"
+    return "none"
 
 
 # ---------------------------------------------------------------------------
@@ -267,6 +319,10 @@ class AnswerOutcome:
     used_markers: set[str] = field(default_factory=set)
     total_claims: int = 0
     verified_claims: int = 0
+    #: Time spent producing the answer text, separate from retrieval. The figure
+    #: that answers "is the model slow, or is retrieval slow?" -- which is
+    #: otherwise guesswork from a single end-to-end number.
+    elapsed_ms: float = 0.0
     #: How much of the question the answer covers. 1.0 for abstractive answers,
     #: which are not measured this way -- an LLM rephrases rather than reusing the
     #: question's vocabulary, so term coverage would penalise good prose.
@@ -290,6 +346,7 @@ async def _answer(
     absence must not turn the copilot into a search box, so extraction is a real
     answerer rather than a placeholder.
     """
+    started = time.perf_counter()
     llm_status = generate.generation_capability()
     if llm_status.state is CapabilityState.AVAILABLE:
         result = await generate.generate(
@@ -304,6 +361,7 @@ async def _answer(
             return AnswerOutcome(
                 text=result.answer,
                 method="abstractive",
+                elapsed_ms=(time.perf_counter() - started) * 1000,
                 status=result.status,
                 claims=_claims_from_generation(result, passages),
                 used_markers=result.used_markers,
@@ -336,6 +394,7 @@ async def _answer(
     return AnswerOutcome(
         text=composed.text,
         method="extractive" if composed.text else None,
+        elapsed_ms=(time.perf_counter() - started) * 1000,
         status=CapabilityStatus(
             capability="grounded_answer",
             state=state,
@@ -782,6 +841,10 @@ async def retrieval_health() -> dict[str, Any]:
     stats = await lexical.corpus_stats()
     dense_state, dense_detail, dense_env = embedding_capability()
     return {
+        # The reranker cache's hit rate, exposed so it is observable. A cache
+        # nobody can see is a cache nobody can tell has stopped working -- and a
+        # hit rate that silently falls to zero looks exactly like a slow host.
+        "rerank_cache": rerank.cache_stats(),
         "lexical": {"state": "available", **stats},
         "dense": {
             "state": dense_state.value,

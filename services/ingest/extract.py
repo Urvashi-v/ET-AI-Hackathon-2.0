@@ -53,7 +53,10 @@ _TAG_CANDIDATE = re.compile(
     [A-Z]{1,5}                                                  # class / ISA letters
     [\s\-‐-―_/]{0,2}
     \d{2,5}                                                     # sequence
-    (?:[\s\-‐-―_/]{0,2}[A-Z])?                        # optional item suffix
+    (?:
+        [\-‐-―_/]{0,2}[A-Z]                        # suffix after a hyphen, or none
+      | [\s]{1,2}[A-Z](?![\s\-‐-―_/]{0,2}\d)         # suffix after a space, but only
+    )?                                                          # when it does not begin a new tag
     (?![A-Za-z0-9])
     """,
     re.VERBOSE,

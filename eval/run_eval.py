@@ -45,6 +45,8 @@ from typing import Any
 
 import httpx
 
+from eval import metrics
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 GOLDEN = REPO_ROOT / "eval" / "golden.jsonl"
 RESULTS_DIR = REPO_ROOT / "eval" / "results"
@@ -62,6 +64,13 @@ EXPECTED_INTENT = {
     "procedural": {"procedural"},
     "diagnostic": {"diagnostic"},
     "comparative": {"comparative"},
+    # Compliance and drawing questions are *topics*, not intents. "When is the
+    # next inspection due?" is a lookup that happens to be about an obligation,
+    # and the router is right to classify it as one. Scoring them against a
+    # "compliance" intent that does not exist measured the harness, not the
+    # system -- both categories read 0.000 until this was fixed.
+    "compliance": {"lookup", "aggregate", "multi_hop", "comparative", "procedural"},
+    "drawing": {"lookup", "multi_hop"},
     "unanswerable": {"lookup", "aggregate", "diagnostic", "multi_hop", "procedural", "comparative"},
 }
 
@@ -149,7 +158,27 @@ def evaluate_case(client: httpx.Client, case: dict[str, Any]) -> dict[str, Any]:
         "abstention_is_routed": abstention_is_routed,
         "generation_state": payload.get("generation", {}).get("state"),
         "answer_present": bool(payload.get("answer")),
+        "answer_method": payload.get("answer_method"),
         "retrieval_legs": {leg["strategy"]: leg["state"] for leg in payload.get("retrieval", [])},
+        # Per-leg timings, so a latency regression can be attributed to a stage
+        # rather than merely observed at the endpoint.
+        "leg_latency_ms": {
+            (leg.get("leg_id") or leg["strategy"]): leg["elapsed_ms"]
+            for leg in payload.get("retrieval", [])
+        },
+        "claim_count": len(payload.get("claims", [])),
+        "verbatim_claims": sum(1 for c in payload.get("claims", []) if c.get("verbatim")),
+        # Kept so citation validity can re-fetch each one and confirm it opens.
+        "citation_refs": [
+            {
+                "marker": c.get("marker"),
+                "doc_id": c.get("doc_id"),
+                "chunk_id": c.get("chunk_id"),
+                "page": c.get("page"),
+                "snippet": c.get("snippet"),
+            }
+            for c in payload.get("citations", [])
+        ],
     }
 
 
@@ -245,8 +274,36 @@ def summarise(results: list[dict[str, Any]], system: dict[str, Any]) -> dict[str
     }
 
 
+def leg_latency_summary(results: list[dict[str, Any]]) -> dict[str, Any]:
+    """Where the time goes, per retrieval leg.
+
+    A p95 at the endpoint says the system is slow; a p95 per leg says which part.
+    Without this, every latency investigation starts by re-deriving the same
+    breakdown by hand.
+    """
+    by_leg: dict[str, list[float]] = {}
+    for result in results:
+        for leg, ms in (result.get("leg_latency_ms") or {}).items():
+            by_leg.setdefault(leg, []).append(float(ms))
+    return {
+        leg: {
+            "p50_ms": percentile(values, 50),
+            "p95_ms": percentile(values, 95),
+            "max_ms": max(values),
+            "samples": len(values),
+        }
+        for leg, values in sorted(by_leg.items())
+    }
+
+
 def collect_system_state(client: httpx.Client) -> dict[str, Any]:
-    """Record what the system looked like, so a later comparison means something."""
+    """Snapshot the configuration a run was measured under.
+
+    Includes the reranker cache state, which matters for reading the latency
+    figures: a second run over the same golden set is served from cache and is
+    not comparable with a cold one. Recording the hit rate makes a warm run
+    identifiable rather than mistakable for a fast system.
+    """
     state: dict[str, Any] = {}
     for key, path in (
         ("health", "/health"),
@@ -265,6 +322,10 @@ def collect_system_state(client: httpx.Client) -> dict[str, Any]:
         "dense": retrieval.get("dense", {}),
         "lexical": retrieval.get("lexical", {}),
         "entity_layer": state.get("assets", {}),
+        # Cache state at the start of the run. A second pass over the same golden
+        # set is served from cache and its latency figures are not comparable
+        # with a cold one; recording this makes a warm run identifiable.
+        "rerank_cache_at_start": retrieval.get("rerank_cache", {}),
         "app_version": state.get("health", {}).get("version"),
     }
 
@@ -333,6 +394,87 @@ def print_report(summary: dict[str, Any], system: dict[str, Any], results: list[
             f"{fmt(bucket['p50_latency_s']):>8}"
         )
 
+    entity = summary.get("entity_extraction", {})
+    if entity.get("state") == "measured":
+        print("\nEntity extraction (hand-labelled reference set)")
+        print(f"  {'precision (micro)':22} {fmt(entity['precision_micro'])}")
+        print(f"  {'recall (micro)':22} {fmt(entity['recall_micro'])}")
+        print(f"  {'F1 (micro)':22} {fmt(entity['f1_micro'])}")
+        print(
+            f"  {'tp / fp / fn':22} "
+            f"{entity['true_positives']} / {entity['false_positives']} / {entity['false_negatives']}"
+        )
+        weakest = sorted(
+            (d for d in entity["per_document"] if d.get("recall") is not None),
+            key=lambda d: d["recall"],
+        )[:3]
+        for doc in weakest:
+            if doc["missed"] or doc["spurious"]:
+                print(
+                    f"    {doc['doc_title'][:44]:46} recall {fmt(doc['recall'])}"
+                    + (f" missed {', '.join(doc['missed'])}" if doc["missed"] else "")
+                    + (f" spurious {', '.join(doc['spurious'])}" if doc["spurious"] else "")
+                )
+    elif entity:
+        print(f"\nEntity extraction: {entity.get('state')} — {entity.get('reason', '')}")
+
+    linkage = summary.get("linkage", {})
+    if linkage.get("state") == "measured":
+        print("\nLinkage completeness")
+        for label, key in (
+            ("mention resolution", "mention_resolution_rate"),
+            ("multi-document assets", "assets_with_documents_pct"),
+            ("cross-system assets", "cross_system_pct"),
+            ("drawing tags linked", "drawing_linkage_rate"),
+        ):
+            print(f"  {label:22} {fmt(linkage.get(key))}")
+        print(f"  {'review queue open':22} {linkage.get('review_queue_open')}")
+
+    citations = summary.get("citation_validity", {})
+    if citations.get("state") == "measured":
+        print("\nCitation validity")
+        print(
+            f"  {'valid / checked':22} "
+            f"{citations['citations_valid']} / {citations['citations_checked']}"
+        )
+        print(f"  {'validity rate':22} {fmt(citations['validity_rate'])}")
+        for failure in citations["failures"][:5]:
+            print(f"    {failure['case']} {failure['marker']}: {'; '.join(failure['problems'])}")
+    elif citations:
+        print(f"\nCitation validity: {citations.get('state')} — {citations.get('reason', '')}")
+
+    grounded = summary.get("groundedness", {})
+    if grounded.get("state") == "measured":
+        print("\nGroundedness")
+        print(f"  {'claims verbatim':22} {grounded['claims_verbatim']} / {grounded['claims_total']}")
+        print(f"  {'groundedness':22} {fmt(grounded['groundedness'])}")
+        print(f"  {'answers with citations':22} {fmt(grounded['cited_answer_rate'])}")
+        print(f"  {'answer correctness':22} {grounded['answer_correctness']['state']}")
+        print(f"    -> {grounded['answer_correctness']['reason']}")
+
+    compliance = summary.get("compliance_detection", {})
+    if compliance.get("state") == "measured":
+        print("\nCompliance gap detection")
+        print(f"  {'correct / scored':22} {compliance['correct']} / {compliance['pairs_scored']}")
+        print(f"  {'accuracy':22} {fmt(compliance['accuracy'])}")
+        for mismatch in compliance["mismatches"][:5]:
+            print(
+                f"    {mismatch['req_id']} on {mismatch['asset_tag']}: "
+                f"expected {mismatch['expected']}, got {mismatch['actual']}"
+            )
+    elif compliance:
+        print(f"\nCompliance detection: {compliance.get('state')} — {compliance.get('reason', '')}")
+
+    legs = summary.get("leg_latency", {})
+    if legs:
+        print("\nLatency by retrieval leg")
+        print(f"  {'leg':16} {'p50 ms':>9} {'p95 ms':>9} {'max ms':>9}")
+        for leg, stats in sorted(legs.items(), key=lambda kv: -(kv[1]["p95_ms"] or 0)):
+            print(
+                f"  {leg:16} {stats['p50_ms']:>9.0f} {stats['p95_ms']:>9.0f} "
+                f"{stats['max_ms']:>9.0f}"
+            )
+
     failures = [r for r in results if "error" in r]
     if failures:
         print("\nErrored cases")
@@ -377,7 +519,20 @@ def main(argv: list[str] | None = None) -> int:
                 f"{case['question'][:56]}"
             )
 
+        # The golden set measures retrieval and abstention. These four measure
+        # things it structurally cannot, each against its own reference set.
+        print("\nMeasuring entity extraction, linkage, citations and compliance…")
+        extra = {
+            "entity_extraction": metrics.entity_metrics(client),
+            "linkage": metrics.linkage_metrics(client),
+            "citation_validity": metrics.citation_metrics(client, results),
+            "groundedness": metrics.groundedness_metrics(results),
+            "compliance_detection": metrics.compliance_metrics(client),
+        }
+
     summary = summarise(results, system)
+    summary.update(extra)
+    summary["leg_latency"] = leg_latency_summary(results)
     print_report(summary, system, results)
 
     if not args.no_save:

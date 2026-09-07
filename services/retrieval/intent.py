@@ -118,6 +118,56 @@ _TIME_WINDOW = re.compile(
     re.I,
 )
 
+#: A question asking for the *present value of a measurement*.
+#:
+#: This system is a document store. It holds what was written down, and the
+#: newest thing written down is over a year old. "What is the current vibration
+#: on P-101A?" cannot be answered from it -- and the dangerous part is that it
+#: very nearly can: the corpus contains a 2023 vibration reading, which retrieves
+#: beautifully and reads like an answer.
+#:
+#: Both halves are required. "Current revision of SOP-4412" asks for present
+#: state and is answerable, because a revision is a documented fact rather than a
+#: measurement. "Vibration reading in 2019" names a measurement and is
+#: answerable, because it asks about the past. Only the conjunction is
+#: unanswerable, so only the conjunction is gated.
+_LIVE_STATE_MARKER = re.compile(
+    r"\b(current|currently|right now|at the moment|as of now|today'?s?|latest|"
+    r"present|real[- ]?time|live)\b",
+    re.I,
+)
+
+_MEASUREMENT_NOUN = re.compile(
+    r"\b(reading|readings|value|values|measurement|temperature|pressure|vibration|"
+    r"flow|level|speed|rpm|amps?|current draw|position|status|state|setpoint|"
+    r"trend|alarm)\b",
+    re.I,
+)
+
+#: Words that make a "current" question about a document rather than a sensor.
+#: Without this, "which revision is current?" is gated, which would be wrong --
+#: currency of a procedure is exactly what this system is good at.
+_DOCUMENTARY_SUBJECT = re.compile(
+    r"\b(revision|version|procedure|document|drawing|sop|standard|requirement|"
+    r"policy|status of the (?:capa|action|incident))\b",
+    re.I,
+)
+
+
+def asks_for_live_state(text: str) -> bool:
+    """Is this a question about the present value of a live measurement?
+
+    Answering one from a document store means presenting a historical record as
+    a current reading, which in a plant is the kind of wrong answer that gets
+    acted on.
+    """
+    if not _LIVE_STATE_MARKER.search(text):
+        return False
+    if _DOCUMENTARY_SUBJECT.search(text):
+        return False
+    return bool(_MEASUREMENT_NOUN.search(text))
+
+
 _WORD_NUMBERS = {"one": 1, "two": 2, "three": 3, "five": 5, "ten": 10}
 
 
@@ -135,6 +185,9 @@ class QueryUnderstanding:
     aggregation: str | None = None
     sub_questions: list[str] = field(default_factory=list)
     decomposition_method: str | None = None
+    #: The question asks for the present value of a measurement, which a document
+    #: store cannot supply however well it retrieves.
+    wants_live_state: bool = False
 
     def entity_tags(self) -> list[str]:
         return [e["canonical_tag"] for e in self.entities if e.get("canonical_tag")]
@@ -151,6 +204,7 @@ class QueryUnderstanding:
             "aggregation": self.aggregation,
             "sub_questions": self.sub_questions,
             "decomposition_method": self.decomposition_method,
+            "wants_live_state": self.wants_live_state,
         }
 
 
@@ -206,6 +260,7 @@ def understand(question: str, ctx: UserContext | None = None) -> QueryUnderstand
         aggregation=aggregation,
         sub_questions=sub_questions,
         decomposition_method=decomposition_method,
+        wants_live_state=asks_for_live_state(normalised),
     )
 
 

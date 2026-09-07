@@ -161,3 +161,38 @@ class TestGazetteer:
     def test_gazetteer_does_not_override_a_parsed_tag(self):
         tags = extract_tags("P-101B tripped", gazetteer={"p-101b": "P-999Z"})
         assert [t.extractor for t in tags] == ["regex:tag"]
+
+
+class TestAdjacentTagSeparation:
+    """Two tags separated by a space must not merge into one.
+
+    Regression test for a bug the Day 6 benchmark surfaced. The suffix group
+    allowed a space before the item letter -- necessary for "P 101 B" -- and
+    that made "T-101 P-101A" match as a single tag "T-101 P". The consequences
+    were both halves of the worst case: it invented an asset that does not exist
+    and it swallowed a real one, so the column and the duty pump both vanished
+    from the P&ID in the same match.
+    """
+
+    def test_space_separated_tags_stay_separate(self) -> None:
+        from services.ingest.extract import extract_tags
+
+        found = [m.normalised for m in extract_tags("CRUDE PREHEAT T-101 P-101A CRUDE COLUMN")]
+        assert found == ["T-101", "P-101A"]
+
+    def test_genuinely_space_separated_tag_still_parses(self) -> None:
+        """The fix must not cost the capability it endangered.
+
+        "P 101 B" is one tag written with spaces, and unifying it with "P-101B"
+        is a headline behaviour of this system. The distinction from the case
+        above is that here the letter does not begin another tag.
+        """
+        from services.ingest.extract import extract_tags
+
+        assert [m.normalised for m in extract_tags("P 101 B")] == ["P-101-B"]
+
+    def test_all_six_spellings_still_unify(self) -> None:
+        from services.common.tags import parse
+
+        spellings = ["P-101B", "P101B", "P 101 B", "10-P-101-B", "P-101-B", "P\u2011101\u2011B"]
+        assert {parse(s).canonical for s in spellings} == {"P-101B"}

@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Business impact · Asset &amp; Operations Brain</title>
+  <link rel="stylesheet" href="css/base.css">
+  <style>
+    /* Provenance is the organising idea of this page, so it is the strongest
+       visual signal on it. A reader must be able to tell at a glance which
+       numbers were measured, which were typed, and which are guesses. */
+    .prov {
+      font-size: 0.62rem; letter-spacing: .06em; text-transform: uppercase;
+      padding: 2px 6px; border-radius: 3px; font-weight: 600; white-space: nowrap;
+    }
+    .prov.input      { color: var(--info);   background: var(--info-bg);   }
+    .prov.assumption { color: var(--warn);   background: var(--warn-bg);   }
+    .prov.calculated { color: var(--accent); background: var(--accent-bg); }
+    .prov.measured   { color: var(--ok);     background: var(--ok-bg);     }
+
+    .roi-field { display: grid; grid-template-columns: 1fr 132px; gap: 10px 12px;
+                 align-items: center; padding: 11px 0; border-bottom: 1px solid var(--line); }
+    .roi-field:last-child { border-bottom: 0; }
+    .roi-field label { font-size: 0.84rem; }
+    .roi-field .help { font-size: 0.73rem; color: var(--fg-2); margin-top: 3px; line-height: 1.45; }
+    .roi-field input { text-align: right; font-variant-numeric: tabular-nums; }
+
+    .roi-line { display: grid; grid-template-columns: 1fr 150px; gap: 12px;
+                padding: 9px 0; border-bottom: 1px solid var(--line); align-items: baseline; }
+    .roi-line:last-child { border-bottom: 0; }
+    .roi-line .formula { font-size: 0.71rem; color: var(--fg-2); font-family: var(--mono); }
+    .roi-line .value { text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
+    .roi-line.total { background: var(--bg-2); margin: 0 -14px; padding: 11px 14px; }
+    .roi-line.total .value { font-size: 1.05rem; }
+
+    .sens { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; background: var(--line); }
+    .sens > div { background: var(--bg-2); padding: 12px; }
+    .sens .v { font-size: 1.05rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+  </style>
+</head>
+<body>
+  <header class="app-header" data-app-header></header>
+
+  <main class="app-main">
+    <div class="page-head">
+      <div>
+        <p class="eyebrow">Business impact</p>
+        <h1>ROI model</h1>
+        <p class="lede">
+          Every output on this page is arithmetic over inputs you can see and change.
+          Nothing is hard-coded, and the three inputs that have <strong>not been
+          measured</strong> are labelled as assumptions wherever they appear — including
+          in the answer they produce.
+        </p>
+      </div>
+    </div>
+
+    <div class="notice warn">
+      <strong>The time-saving inputs are assumptions, not measurements.</strong>
+      No time-to-answer study has been run. The protocol is written up in
+      <code>docs/time-to-answer.md</code> and is marked <strong>NOT YET RUN</strong>.
+      Until it is, treat every figure below as a model of what would follow <em>if</em>
+      those assumptions held — and set them to your own numbers before quoting anything.
+    </div>
+
+    <div class="grid sidebar">
+      <div class="stack">
+        <section class="card">
+          <div class="card-head">
+            <h2>Inputs</h2>
+            <button type="button" class="small ghost" data-reset>Reset to defaults</button>
+          </div>
+          <div class="card-body" data-roi-inputs></div>
+        </section>
+
+        <section class="card">
+          <div class="card-head">
+            <h2>Calculation</h2>
+            <span class="small dim">every line shows its formula</span>
+          </div>
+          <div class="card-body" data-roi-output></div>
+        </section>
+
+        <section class="card">
+          <div class="card-head">
+            <h2>Sensitivity to the assumptions</h2>
+            <span class="small dim">how much of the answer rests on unmeasured inputs</span>
+          </div>
+          <div class="card-body flush">
+            <div class="sens" data-roi-sensitivity></div>
+            <p class="small dim" style="padding:11px 14px;margin:0;border-top:1px solid var(--line)">
+              A single ROI number invites belief. This shows the range you are actually
+              being offered when the unmeasured inputs move — which is the honest form
+              of the same calculation.
+            </p>
+          </div>
+        </section>
+      </div>
+
+      <div class="stack">
+        <section class="card">
+          <div class="card-head"><h2>What is measured</h2></div>
+          <div class="card-body stack" data-measured>
+            <p class="small dim">Loading measured figures…</p>
+          </div>
+        </section>
+
+        <section class="card">
+          <div class="card-head"><h2>Provenance</h2></div>
+          <div class="card-body stack small">
+            <div class="row tight"><span class="prov input">User input</span>
+              <span class="dim">You typed it, or accepted a default you can see.</span></div>
+            <div class="row tight"><span class="prov assumption">Assumption</span>
+              <span class="dim">Plausible, and <strong>not measured here</strong>.</span></div>
+            <div class="row tight"><span class="prov measured">Measured</span>
+              <span class="dim">This project measured it, with a stated method.</span></div>
+            <div class="row tight"><span class="prov calculated">Calculated</span>
+              <span class="dim">Derived by the formula shown beside it.</span></div>
+          </div>
+        </section>
+      </div>
+    </div>
+  </main>
+
+  <script type="module">
+    import { api } from './js/api.js';
+    import { esc, mountHeader, mountSystemStatus, fmtNumber } from './js/ui.js';
+    import { FIELDS, calculate, sensitivity } from './js/roi.js';
+
+    mountHeader('impact.html');
+    mountSystemStatus(api);
+
+    const $ = (sel) => document.querySelector(sel);
+    const STORAGE_KEY = 'brain.roi.inputs';
+
+    // Inputs persist per browser so a reader can come back to their own numbers
+    // rather than the defaults. Nothing is sent anywhere.
+    function loadInputs() {
+      try {
+        return { ...Object.fromEntries(FIELDS.map((f) => [f.key, f.value])),
+                 ...JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}') };
+      } catch {
+        return Object.fromEntries(FIELDS.map((f) => [f.key, f.value]));
+      }
+    }
+    function saveInputs(values) {
+      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(values)); } catch { /* private mode */ }
+    }
+
+    let values = loadInputs();
+
+    const PROV_CLASS = { 'USER INPUT': 'input', ASSUMPTION: 'assumption',
+                         MEASURED: 'measured', CALCULATED: 'calculated' };
+
+    function renderInputs() {
+      $('[data-roi-inputs]').innerHTML = FIELDS.map((f) => `
+        <div class="roi-field">
+          <div>
+            <div class="row tight">
+              <label for="roi-${esc(f.key)}">${esc(f.label)}</label>
+              <span class="prov ${PROV_CLASS[f.provenance]}">${esc(f.provenance)}</span>
+            </div>
+            <div class="help">${esc(f.help)}</div>
+          </div>
+          <input id="roi-${esc(f.key)}" type="number" data-roi-key="${esc(f.key)}"
+                 value="${values[f.key]}" min="${f.min}" max="${f.max}" step="any"
+                 aria-label="${esc(f.label)} in ${esc(f.unit)}">
+        </div>`).join('');
+
+      for (const input of document.querySelectorAll('[data-roi-key]')) {
+        input.addEventListener('input', () => {
+          const field = FIELDS.find((f) => f.key === input.dataset.roiKey);
+          const raw = Number(input.value);
+          values[field.key] = Number.isFinite(raw)
+            ? Math.min(field.max, Math.max(field.min, raw))
+            : field.value;
+          saveInputs(values);
+          renderOutput();
+        });
+      }
+    }
+
+    function money(value) {
+      if (value === null || !Number.isFinite(value)) return '—';
+      return fmtNumber(Math.round(value));
+    }
+
+    function renderOutput() {
+      const result = calculate(values);
+      $('[data-roi-output]').innerHTML = result.lines.map((line) => {
+        const total = line.group === 'total';
+        const display = line.value === null
+          ? `<span class="dim">${esc(line.undefinedNote || 'undefined')}</span>`
+          : line.unit === '%' ? `${line.value.toFixed(1)}%`
+          : line.unit === 'months' ? `${line.value.toFixed(1)} months`
+          : line.unit === 'currency' ? money(line.value)
+          : fmtNumber(Math.round(line.value));
+        return `
+          <div class="roi-line ${total ? 'total' : ''}">
+            <div>
+              <div class="row tight">
+                <span>${esc(line.label)}</span>
+                <span class="prov calculated">Calculated</span>
+              </div>
+              <div class="formula">${esc(line.formula)}</div>
+            </div>
+            <div class="value">${display}</div>
+          </div>`;
+      }).join('') + `
+        <p class="small dim" style="margin-top:12px">
+          Currency is whatever unit you entered costs in — the model never converts,
+          because a conversion rate would be one more unlabelled assumption.
+        </p>`;
+
+      const scenarios = sensitivity(values);
+      $('[data-roi-sensitivity]').innerHTML = scenarios.map((s) => `
+        <div>
+          <div class="small dim">${esc(s.label)}</div>
+          <div class="v">${money(s.value)}</div>
+          <div class="small dim">annual net</div>
+        </div>`).join('');
+    }
+
+    /**
+     * Figures this project has actually measured, pulled live.
+     *
+     * Placed beside the model on purpose: it is the contrast between the two
+     * panels — measured on the right, assumed on the left — that keeps the ROI
+     * numbers in proportion.
+     */
+    async function loadMeasured() {
+      const node = $('[data-measured]');
+      try {
+        const [health, retrieval] = await Promise.all([api.health(), api.queryHealth()]);
+        node.innerHTML = `
+          <div class="row tight"><span class="prov measured">Measured</span>
+            <span class="small">Corpus indexed</span></div>
+          <div class="small dim">${fmtNumber(retrieval.lexical.chunks ?? 0)} chunks,
+            ${fmtNumber(retrieval.dense.indexed_chunks ?? 0)} dense vectors</div>
+
+          <div class="row tight" style="margin-top:8px"><span class="prov measured">Measured</span>
+            <span class="small">Providers</span></div>
+          <div class="small dim">${Object.entries(health.providers)
+            .map(([k, v]) => `${esc(k)}: ${esc(v.state)}`).join(' · ')}</div>
+
+          <div class="row tight" style="margin-top:8px"><span class="prov assumption">Assumption</span>
+            <span class="small">Time saved per search</span></div>
+          <div class="small dim">Not measured. See <code>docs/time-to-answer.md</code>.</div>
+
+          <div class="divider"></div>
+          <p class="small dim" style="margin:0">
+            Retrieval quality, entity F1, citation validity and latency are measured by
+            <code>eval/run_eval.py</code> and reported in the README with their methods.
+            None of them is an input to this model — they say whether the system works,
+            not what it is worth.
+          </p>`;
+      } catch (error) {
+        node.innerHTML = `<p class="small dim">Could not read live system state: ${
+          esc(error.message || String(error))}</p>`;
+      }
+    }
+
+    $('[data-reset]').addEventListener('click', () => {
+      values = Object.fromEntries(FIELDS.map((f) => [f.key, f.value]));
+      saveInputs(values);
+      renderInputs();
+      renderOutput();
+    });
+
+    renderInputs();
+    renderOutput();
+    loadMeasured();
+  </script>
+</body>
+</html>

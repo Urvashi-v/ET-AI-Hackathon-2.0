@@ -86,6 +86,8 @@ class ConfidenceInputs:
     missing_terms: list[str] = field(default_factory=list)
     #: Proper nouns in the question that appear nowhere in the corpus.
     unknown_terms: list[str] = field(default_factory=list)
+    #: The question asks for the present value of a live measurement.
+    wants_live_state: bool = False
     #: How the answer was produced, for the explanation text only. Extraction and
     #: synthesis fail for different reasons and the operator should be told which.
     answer_method: str | None = None
@@ -144,6 +146,15 @@ def score(inputs: ConfidenceInputs) -> ConfidenceReport:
     if inputs.unknown_terms:
         total = min(total, _GATE_CEILING)
         gate = gate or "unknown_term"
+
+    # The question asks what a sensor reads right now. This system holds
+    # documents, and the newest thing in them is historical -- so retrieval will
+    # return a real, well-ranked, correctly cited *past* reading and it will look
+    # like an answer. That is the most dangerous shape of wrong answer available
+    # here, because everything about it is right except that it is out of date.
+    if inputs.wants_live_state:
+        total = min(total, _GATE_CEILING)
+        gate = gate or "live_state_unavailable"
 
     if not inputs.answerer_available:
         mode = ConfidenceMode.ABSTAIN_NO_ANSWER
@@ -262,6 +273,13 @@ def _abstention_reason(
         return (
             "The asset named in the question is not present in the corpus: "
             + ", ".join(inputs.anchors_missing)
+        )
+    if gate == "live_state_unavailable":
+        return (
+            "This asks for the present value of a measurement. The system holds documents, "
+            "not live process data -- no historian or DCS is connected -- so the most it can "
+            "offer is the last recorded value, which is shown below. Presenting a historical "
+            "reading as a current one is the wrong answer this refusal exists to prevent."
         )
     if gate == "unknown_term":
         return (
