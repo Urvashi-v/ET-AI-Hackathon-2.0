@@ -32,7 +32,7 @@
     .evidence-item:last-child { border-bottom: 0; }
     .chip-row { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px; scrollbar-width: none; }
     .chip-row::-webkit-scrollbar { display: none; }
-    .chip-row button { min-height: 42px; white-space: nowrap; }
+    .chip-row button { min-height: 44px; white-space: nowrap; }
     .sticky-ask {
       position: fixed; left: 0; right: 0; bottom: 0; z-index: 30;
       background: var(--bg-1); border-top: 1px solid var(--line-strong);
@@ -40,6 +40,34 @@
     }
     .sticky-ask form { max-width: 620px; margin: 0 auto; display: flex; gap: 8px; }
     .sticky-ask input { flex: 1; }
+    .sync-bar {
+      display: flex; align-items: center; gap: 8px;
+      padding: 8px 11px; border-radius: var(--radius);
+      background: var(--bg-2); border: 1px solid var(--line);
+      margin-bottom: 12px;
+    }
+    .sync-bar .spacer { flex: 1; }
+    .sync-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--fg-2); flex: none; }
+    .sync-bar.online  .sync-dot { background: var(--ok); }
+    .sync-bar.offline .sync-dot { background: var(--warn); }
+    .sync-bar.offline { border-color: var(--warn); background: var(--warn-bg); }
+    .sync-detail { padding: 10px 11px; margin: -6px 0 12px; font-size: 0.78rem;
+                   background: var(--bg-2); border: 1px solid var(--line); border-radius: var(--radius); }
+    .sync-detail ul { margin: 6px 0 0; padding-left: 18px; }
+
+    .dossier { display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px; }
+    .dossier details {
+      border: 1px solid var(--line); border-radius: var(--radius); background: var(--bg-1);
+    }
+    .dossier summary {
+      padding: 14px; cursor: pointer; font-weight: 600; font-size: 0.92rem;
+      display: flex; align-items: center; gap: 8px; min-height: 48px;
+    }
+    .dossier summary .count { color: var(--fg-2); font-weight: 400; font-size: 0.8rem; }
+    .dossier details[open] summary { border-bottom: 1px solid var(--line); }
+    .dossier details > div { padding: 12px 14px; }
+    .cached-badge { font-size: 0.7rem; color: var(--warn); }
+
     @media (min-width: 900px) { .field-shell { padding-bottom: 110px; } }
   </style>
 </head>
@@ -53,6 +81,17 @@
       </div>
       <a class="btn small" href="index.html">Desk view</a>
     </div>
+
+    <!-- Connectivity and cache scope. Stated, not implied: a technician needs to
+         know whether what they are reading came from the plant or from their
+         phone, and how old it is. -->
+    <div class="sync-bar" data-sync>
+      <span class="sync-dot" data-sync-dot></span>
+      <span class="small" data-sync-state>Checking…</span>
+      <span class="spacer"></span>
+      <button type="button" class="small ghost" data-sync-detail-toggle>Cache</button>
+    </div>
+    <div class="sync-detail" data-sync-detail hidden></div>
 
     <!-- Asset context: the fastest possible entry is the tag on the nameplate. -->
     <section class="asset-hero" data-asset-hero>
@@ -69,6 +108,33 @@
 
     <div class="chip-row" style="margin:14px 0" data-quick></div>
 
+    <!-- Asset dossier. Each panel is collapsed by default: on a phone at the
+         machine, four expanded panels is four screens of scrolling before the
+         ask box. Counts are on the summary so the technician knows what is
+         inside without opening it. -->
+    <section class="dossier" data-dossier-panels hidden>
+      <details data-panel="workorders">
+        <summary>Work orders <span class="count" data-count-wo></span></summary>
+        <div data-wo-list></div>
+      </details>
+      <details data-panel="incidents">
+        <summary>Incidents <span class="count" data-count-inc></span></summary>
+        <div data-inc-list></div>
+      </details>
+      <details data-panel="compliance">
+        <summary>Safety &amp; compliance <span class="count" data-count-comp></span></summary>
+        <div data-comp-list></div>
+      </details>
+      <details data-panel="rca">
+        <summary>RCA evidence <span class="count" data-count-rca></span></summary>
+        <div data-rca-list></div>
+      </details>
+      <details data-panel="pid">
+        <summary>P&amp;ID <span class="count" data-count-pid></span></summary>
+        <div data-pid-view></div>
+      </details>
+    </section>
+
     <section data-result></section>
   </div>
 
@@ -76,12 +142,19 @@
     <form data-ask>
       <input class="big-input" type="text" name="question" required
              placeholder="Ask about this asset…" autocomplete="off">
+      <!-- Rendered only when the browser genuinely has speech recognition. A
+           microphone button that does nothing is worse than no button. -->
+      <button type="button" class="big-btn ghost" data-voice hidden
+              style="width:auto;padding:0 16px" aria-label="Dictate question">🎤</button>
       <button class="primary" type="submit" style="min-height:56px;padding:0 22px">Ask</button>
     </form>
   </div>
 
   <script type="module">
     import { api, streamQuery, subscribeEvents } from './js/api.js';
+    import * as offline from './js/offline.js';
+    import * as voice from './js/voice.js';
+    import { DrawingViewer } from './js/drawingviewer.js';
     import {
       esc, provBadge, renderError, renderEmpty, renderCapability,
       confidenceBand, fmtDate, tagChip, qs,
@@ -380,6 +453,231 @@
     subscribeEvents({
       'notification.raised': () => loadAlerts(currentAssetTag()),
     });
+
+
+    // ------------------------------------------------------ day 5: field kit
+
+    /**
+     * Connectivity, last synchronisation and exactly what is held offline.
+     *
+     * Three separate facts, shown separately, because they answer different
+     * questions: can I reach the plant, how old is what I am looking at, and
+     * what do I still have if I lose signal. Collapsing them into one "offline
+     * ready" badge would imply the whole system fits on the phone.
+     */
+    function renderSync(online) {
+      const bar = $('[data-sync]');
+      const scope = offline.describe();
+      bar.classList.toggle('online', online);
+      bar.classList.toggle('offline', !online);
+
+      const last = scope.lastSync
+        ? `last sync ${new Date(scope.lastSync).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
+        : 'nothing cached yet';
+      $('[data-sync-state]').textContent = online
+        ? `Online · ${last}`
+        : `Offline · showing cached data · ${last}`;
+
+      $('[data-sync-detail]').innerHTML = `
+        <strong>Cached on this device</strong>
+        <div class="dim">${scope.count} item(s), kept up to ${scope.maxAgeHours} hours.
+          Only content this browser has already loaded online. Retrieval, the graph,
+          RCA and compliance all run on the server — they are not available offline.</div>
+        ${scope.count ? `<ul>${scope.items.slice(0, 10).map((i) => `
+          <li><span class="mono">${esc(i.label)}</span>
+            <span class="dim">${esc(offline.ageLabel(Date.now() - Date.parse(i.cached_at)))}</span></li>`).join('')}</ul>`
+          : ''}`;
+    }
+
+    $('[data-sync-detail-toggle]').addEventListener('click', () => {
+      const node = $('[data-sync-detail]');
+      node.hidden = !node.hidden;
+      if (!node.hidden) renderSync(navigator.onLine);
+    });
+
+    offline.watchConnectivity((online) => {
+      renderSync(online);
+      // Coming back online: refresh what is on screen rather than leaving the
+      // technician looking at cached data with a green dot above it.
+      if (online && currentAssetTag()) loadDossier(currentAssetTag());
+    });
+
+    // --- voice ---------------------------------------------------------------
+    const voiceState = voice.describe();
+    if (voiceState.available) {
+      const button = $('[data-voice]');
+      button.hidden = false;
+      button.title = voiceState.privacyNote || 'Dictate';
+      let session = null;
+      button.addEventListener('click', async () => {
+        const input = $('[data-ask] [name="question"]');
+        if (session) { session.stop(); session = null; button.textContent = '🎤'; return; }
+        button.textContent = '⏹';
+        input.placeholder = 'Listening…';
+        session = voice.listen({ onPartial: (text) => { input.value = text; } });
+        try {
+          const text = await session.promise;
+          if (text) { input.value = text; ask(text); }
+        } catch (error) {
+          input.placeholder = error.message;
+        } finally {
+          session = null;
+          button.textContent = '🎤';
+          setTimeout(() => { input.placeholder = 'Ask about this asset…'; }, 4000);
+        }
+      });
+    }
+
+    // --- asset dossier -------------------------------------------------------
+
+    /**
+     * Everything the technician needs about the asset in front of them.
+     *
+     * Each panel goes through the offline cache, so the whole dossier survives a
+     * lost signal — and each says whether what it is showing came from the plant
+     * or from the phone.
+     */
+    async function loadDossier(assetTag) {
+      if (!assetTag) return;
+      $('[data-dossier-panels]').hidden = false;
+
+      await Promise.all([
+        panel(`rca:${assetTag}`, `RCA · ${assetTag}`,
+          () => api.rca({ asset_tag: assetTag, failure_description: 'field inspection' }),
+          (data, note) => {
+            $('[data-count-wo]').textContent = `(${data.related_work_orders.length})`;
+            $('[data-count-inc]').textContent = `(${data.related_incidents.length})`;
+            $('[data-count-rca]').textContent = `(${data.candidate_causes.length})`;
+            renderWorkOrders(data.related_work_orders, note);
+            renderIncidents(data.related_incidents, note);
+            renderRca(data, note);
+          }),
+        panel(`compliance:${assetTag}`, `Compliance · ${assetTag}`,
+          () => api.complianceEvaluate({ asset_tag: assetTag }),
+          (data, note) => {
+            $('[data-count-comp]').textContent = `(${data.gaps} gap${data.gaps === 1 ? '' : 's'})`;
+            renderCompliance(data, note);
+          }),
+        panel(`drawing:${assetTag}`, `P&ID · ${assetTag}`,
+          () => api.locateAsset(assetTag),
+          (data) => {
+            $('[data-count-pid]').textContent = data.appearances.length
+              ? `(${data.drawings} drawing)` : '(not on a drawing)';
+            renderPid(assetTag, data);
+          }),
+      ]);
+      renderSync(navigator.onLine);
+    }
+
+    /** Run one panel through the cache and label where its data came from. */
+    async function panel(key, label, loader, render) {
+      try {
+        const result = await offline.through(key, loader, { label });
+        const note = result.source === 'cached'
+          ? `<div class="cached-badge">Cached ${offline.ageLabel(result.ageMs)} — not live</div>`
+          : '';
+        render(result.payload, note);
+      } catch (error) {
+        // Which panel failed and why, rather than a blank section that reads as
+        // "this asset has none of these".
+        const target = { [`rca:${currentAssetTag()}`]: '[data-rca-list]',
+                         [`compliance:${currentAssetTag()}`]: '[data-comp-list]',
+                         [`drawing:${currentAssetTag()}`]: '[data-pid-view]' }[key];
+        if (target && $(target)) {
+          $(target).innerHTML = `<div class="small dim">${esc(error.message || 'Unavailable.')}</div>`;
+        }
+      }
+    }
+
+    function renderWorkOrders(orders, note) {
+      $('[data-wo-list]').innerHTML = note + (orders.length ? orders.slice(0, 8).map((w) => `
+        <div class="evidence-item">
+          <div class="row tight">
+            <span class="badge ${w.wo_type === 'CORRECTIVE' ? 'warn' : 'neutral'} no-dot mono">${esc(w.wo_id)}</span>
+            <span class="small dim">${esc(w.opened_on || '')}</span>
+            ${w.downtime_hours ? `<span class="small dim">${w.downtime_hours} h down</span>` : ''}
+          </div>
+          <div class="small" style="margin-top:3px">${esc(w.description || '')}</div>
+          ${w.as_found ? `<div class="small dim" style="margin-top:2px">Found: ${esc(w.as_found)}</div>` : ''}
+        </div>`).join('') : '<div class="small dim">No work orders recorded.</div>');
+    }
+
+    function renderIncidents(incidents, note) {
+      $('[data-inc-list]').innerHTML = note + (incidents.length ? incidents.map((i) => `
+        <div class="evidence-item">
+          <div class="row tight">
+            <span class="badge danger no-dot mono">${esc(i.incident_id)}</span>
+            <span class="small dim">${esc(i.occurred_on || '')}</span>
+            <span class="badge neutral no-dot">${esc(i.investigation_status || '')}</span>
+          </div>
+          <div class="small" style="margin-top:3px">${esc(i.root_cause || i.immediate_cause || '')}</div>
+        </div>`).join('') : '<div class="small dim">No incidents recorded.</div>');
+    }
+
+    function renderRca(rca, note) {
+      const causes = rca.candidate_causes || [];
+      $('[data-rca-list]').innerHTML = note + (rca.causal_analysis_abstained
+        ? `<div class="small dim">${esc(rca.causal_analysis_reason || '')}</div>`
+        : causes.slice(0, 4).map((c, i) => `
+          <div class="evidence-item">
+            <div class="row tight">
+              <span class="badge ${i === 0 ? 'warn' : 'neutral'} no-dot mono">${i + 1}</span>
+              <strong class="small">${esc(c.label)}</strong>
+            </div>
+            <div class="small dim" style="margin-top:3px">${esc(c.rationale)}</div>
+          </div>`).join(''))
+        + (rca.open_corrective_actions?.length ? `
+          <div class="notice warn" style="margin-top:10px">
+            <strong>${rca.open_corrective_actions.length} open corrective action(s).</strong>
+            ${rca.open_corrective_actions.map((a) =>
+              `${esc(a.capa_id)}: ${esc(a.action || '')}`).join('; ')}
+          </div>` : '');
+    }
+
+    function renderCompliance(data, note) {
+      const gaps = (data.findings || []).filter((f) => f.state === 'gap');
+      $('[data-comp-list]').innerHTML = note + `
+        <div class="row tight small" style="margin-bottom:8px">
+          <span class="badge ok no-dot">${data.satisfied} satisfied</span>
+          <span class="badge danger no-dot">${data.gaps} gaps</span>
+          <span class="badge warn no-dot">${data.needs_verification} to verify</span>
+          <span class="badge neutral no-dot">${data.not_evaluable} not evaluable</span>
+        </div>
+        ${gaps.length ? gaps.slice(0, 5).map((f) => `
+          <div class="evidence-item">
+            <div class="row tight">
+              <span class="badge danger no-dot mono">${esc(f.req_id)}</span>
+              <span class="small dim">${esc(f.source_standard)}</span>
+            </div>
+            <div class="small" style="margin-top:3px">${esc(f.obligation_text)}</div>
+            <div class="small dim" style="margin-top:2px">${esc(f.reason)}</div>
+          </div>`).join('') : '<div class="small dim">No unmet obligations found for this asset.</div>'}`;
+    }
+
+    async function renderPid(assetTag, located) {
+      const node = $('[data-pid-view]');
+      if (!located.appearances?.length) {
+        node.innerHTML = `<div class="small dim">${esc(located.detail || 'Not on any digitised drawing.')}</div>`;
+        return;
+      }
+      // The viewer needs the detections endpoint, which needs a connection. The
+      // location itself is cached, so offline the technician still learns which
+      // sheet and roughly where.
+      if (!navigator.onLine) {
+        const a = located.appearances[0];
+        node.innerHTML = `<div class="small">
+          Appears on <strong>${esc(a.doc_title)}</strong> page ${a.page}
+          at ${a.x0.toFixed(0)}, ${a.y0.toFixed(0)} pt.
+          <span class="dim">The drawing image needs a connection.</span></div>`;
+        return;
+      }
+      const viewer = new DrawingViewer(node);
+      const first = located.appearances[0];
+      await viewer.load(first.doc_id, first.page, { highlight: assetTag });
+    }
+
+    // Load the dossier for whatever asset the page was opened on.
+    if (currentAssetTag()) loadDossier(currentAssetTag());
 
   </script>
 </body>

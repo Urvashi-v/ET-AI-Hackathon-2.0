@@ -95,6 +95,19 @@ export class GraphView {
 
   #run() {
     cancelAnimationFrame(this.frame);
+
+    // Settle and draw once, synchronously, before handing over to the animation
+    // loop.
+    //
+    // requestAnimationFrame does not fire at all while a page is not being
+    // painted -- a background tab, a collapsed <details>, a hidden pane. Without
+    // this the very first frame never runs and the graph is a blank rectangle
+    // that looks exactly like a failed fetch. Stepping a few times first also
+    // means the layout is already roughly settled when it does become visible,
+    // instead of exploding outwards while someone watches.
+    for (let i = 0; i < 40; i += 1) this.#step();
+    this.#draw();
+
     const tick = () => {
       this.#step();
       this.#draw();
@@ -102,6 +115,30 @@ export class GraphView {
       if (this.alpha > 0.008) this.frame = requestAnimationFrame(tick);
     };
     this.frame = requestAnimationFrame(tick);
+
+    // Re-settle when the container finally gets a real width. The simulation
+    // centres nodes on the container, so a layout computed against a
+    // zero-width box puts every node in the same place; without this they stay
+    // there once the box is real.
+    if (!this.observer && typeof ResizeObserver !== 'undefined') {
+      let lastWidth = this.svg.clientWidth;
+      this.observer = new ResizeObserver(() => {
+        const width = this.svg.clientWidth;
+        if (width > 0 && Math.abs(width - lastWidth) > 40) {
+          lastWidth = width;
+          this.alpha = 0.6;
+          this.#run();
+        }
+      });
+      this.observer.observe(this.svg);
+    }
+  }
+
+  /** Release the resize observer and the animation frame. */
+  destroy() {
+    cancelAnimationFrame(this.frame);
+    this.observer?.disconnect();
+    this.observer = null;
   }
 
   #step() {

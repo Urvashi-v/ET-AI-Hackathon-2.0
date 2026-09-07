@@ -7,7 +7,7 @@ a provenance-carrying knowledge graph, and hybrid retrieval — with the five
 capabilities from the brief built as query patterns over it rather than as five
 separate demos.
 
-**Day 4 of the build.** This README separates what runs from what does not. See
+**Day 5 of the build.** This README separates what runs from what does not. See
 [Feature status](#feature-status).
 
 ---
@@ -62,6 +62,31 @@ Produced by `python scripts/demo_spine.py` against the live stack.
 | **Compliance** | yes, evidence-backed | 20 requirements evaluated; on V-102: 4 satisfied, 5 gaps, 44.4% of 9 decidable. On P-101B: 5 gaps, 2 needing verification, 13 not evaluable |
 | **Proactive** | yes, event-driven | 4 notifications from one work-order event, each with its evidence and audience |
 
+### P&ID digitisation, measured on the demo sheet
+
+Produced by real ingestion of one A3 P&ID. No accuracy figure is claimed anywhere,
+because none has been measured against a labelled ground truth.
+
+| Detector | Method | Training data | Result |
+|---|---|---|---|
+| Tag localisation | PDF word geometry + tag grammar | none | **12 tags, 11 linked to canonical assets** |
+| Instrument bubbles | `cv2.HoughCircles` | none | 14 circles, named from the tags inside them |
+| Process lines | `cv2.HoughLinesP`, merged into runs | none | 439 runs (857 raw segments merged) |
+| Topology | line endpoints touching symbols | none | 9 connections — a *lower bound*, not a complete topology |
+| Equipment symbols | needs a trained detector | **~200 sheets minimum** | **not implemented; nothing emitted** |
+
+`HV-1502` and `T-101` are drawn on the sheet and match no asset in the corpus.
+That is reported, not hidden — it is the gap between what the plant has drawn and
+what it has recorded.
+
+### Every surface reads the same backend
+
+`python scripts/verify_surfaces.py` — **24 checks, 0 failures**. It asserts that
+the asset id the graph explorer resolves is the one the field view loads, that
+the documents the copilot cites appear in the graph neighbourhood, that the node
+count the ingestion chart draws is the one Neo4j reports, and that symbol
+detection is still declared unimplemented.
+
 **Two rows deserve reading together.** Abstention recall and false abstention are
 a pair: either can be driven to a perfect score by a system that always abstains
 or never does, and only both together say anything. 0.750 / 0.095 means the
@@ -98,7 +123,7 @@ Then open **http://localhost:8000** (API docs at `/docs`, Neo4j browser at
 ```bash
 docker compose exec api python scripts/load_requirements.py   # compliance corpus
 python eval/run_eval.py                                       # the numbers above
-python -m pytest -q -m "not integration"                      # 357 unit tests
+python -m pytest -q -m "not integration"                      # 380 unit tests
 python -m pytest -q -m integration                            # 64 API tests
 ```
 
@@ -156,6 +181,13 @@ Honest categories. Nothing below is described as working when it is mocked.
 | **Lessons learned** | Incident similarity from four independent signals — semantic (the real embedding model, over already-stored vectors), failure mechanism, graph proximity, documentary cross-reference — each returned with the evidence that produced it. Empty result when there is no precedent. |
 | **Compliance evaluation** | Four verdict states, evaluated per testability mode. Only evidence-document and graph-state obligations can be decided from records; procedure-text obligations return a candidate control for human verification. `coverage_pct_of_decidable` names its own denominator. |
 | **Proactive event path** | Ingestion → graph changed → precedent, compliance, open-action and superseded-procedure matching → notification. Rows in Postgres, pushed over SSE, de-duplicated on pattern among unacknowledged findings. No timers anywhere. |
+| **P&ID digitisation** | Real OpenCV: Hough circle transform for ISA instrument bubbles, probabilistic Hough for pipe runs, merged from 857 raw segments into 439 runs. Tags localised from PDF word geometry — exact coordinates, not inferred — and resolved through the same entity resolution as prose. Equipment-symbol classification is **declared unimplemented** with its dataset requirements specified, not faked. |
+| **Drawing viewer** | Page render with an SVG overlay scaled from PDF points. Click an asset anywhere and its rectangle is highlighted on the sheet; click a detection and it names the detector and its parameters rather than only a score. Line segments hidden by default — hundreds of them, least reliable detector. |
+| **Mobile field view** | 375 px first, zero horizontal overflow, every tap target ≥ 44 px. Asset context, work orders, incidents, compliance, RCA evidence, the P&ID and proactive alerts, all from the same API. |
+| **Offline cache** | Real previously-retrieved responses only, in localStorage, labelled with their age and enumerable by scope. Never claims the system is offline — retrieval, the graph, RCA and compliance all run server-side, and an asset never opened online is reported unavailable rather than shown empty. |
+| **Voice input** | The browser's own Web Speech API, rendered **only where it genuinely exists** (absent in Firefox). No fallback that records to nothing. States that Chrome sends audio to a Google service, because a plant with a policy about that needs to know. |
+| **Graph explorer** | Hand-written force-directed SVG renderer, no framework and no CDN — which keeps the air-gap story intact alongside offline OCR, embeddings and reranking. Nodes and edges come from Neo4j; clicking one returns its real properties. |
+| **Graph growth visual** | Bar chart of node counts per label, re-read from Neo4j on every `graph.changed` event. Deliberately not an animation of nodes appearing: that is the most tempting fake in this project, and a count cannot be faked without faking the database. |
 | **SSE streaming** | Live ingestion events and streamed query pipeline stages — real stage completions, not timers. |
 
 ### Requires credentials — interface built, provider absent
@@ -274,22 +306,26 @@ services/
               lessons (incident similarity) · proactive (the event path)
   ingest/     storage · classify · parsers/ (pdf·text·docx·tabular·image) · ocr ·
               chunk · extract · llm_extract · resolve · revisions · records ·
-              record_writer · embeddings · graph_writer · pipeline · worker
+              record_writer · pid · pid_writer · embeddings · graph_writer ·
+              pipeline · worker
   retrieval/  intent (+decomposition) · lexical (BM25) · dense (pgvector) ·
               graph_retrieval · fusion (RRF) · rerank (cross-encoder) ·
               compose (extractive) · generate (LLM) · confidence · warmup ·
               pipeline
 database/
-  migrations/ 6 SQL migrations — core schema, BM25 index, pgvector, enum
-              extension, extraction provenance + timing, revision lineage
+  migrations/ 7 SQL migrations — core schema, BM25 index, pgvector, enum
+              extension, extraction provenance + timing, revision lineage,
+              drawing detections + connections
   cypher/     constraints and indexes · ontology seed
-web/          7 HTML pages · css/base.css · js/{api,ui,graphview,sourceviewer}.js
+web/          7 HTML pages · css/base.css ·
+              js/{api,ui,graphview,sourceviewer,drawingviewer,offline,voice}.js
 data/
+  pid_training/ dataset structure for symbol detection (empty by design)
   corpus/     real documents (empty by design) + SOURCES.md + manifest schema
   synthetic/  deterministic generators (CSV/Markdown + real PDFs) + SCHEMA.md
   requirements/ atomised requirements with per-entry provenance
 eval/         golden.jsonl (25 questions) · run_eval.py · results/
-tests/        421 tests — 357 unit, 64 integration
+tests/        445 collected — 381 unit, 64 integration
 docs/         architecture · ontology · security · adr/
 ```
 
@@ -319,84 +355,103 @@ python eval/run_eval.py
 Stated plainly, because a limitation you name is worth more than one a reviewer
 finds.
 
-1. **RCA candidate causes are aggregated, not reasoned.** The agent ranks
+1. **Equipment-symbol detection is not implemented.** Tags, instrument bubbles
+   and pipe runs are detected without training data; classifying a pump against a
+   vessel by silhouette is not. The dataset needed is specified in
+   `data/pid_training/README.md` — ~200 annotated sheets minimum. The stage
+   reports `not_implemented` and emits nothing.
+2. **Recovered P&ID topology is a lower bound.** Two symbols are connected only
+   when one detected segment touches both. Collinear joining across symbol gaps,
+   elbow following and process-versus-signal-line discrimination are not built,
+   so the absence of a connection means nothing. Nine were recovered from the
+   demo sheet.
+3. **No detection accuracy is measured.** There is no labelled ground truth for
+   this drawing, so no mAP, precision or recall is reported for any detector. The
+   counts are real; their correctness is unquantified.
+4. **Offline covers cached responses, not the system.** Retrieval, the graph, RCA
+   and compliance all run server-side. An asset never opened online is
+   unavailable offline, and the UI says so rather than showing an empty page.
+5. **Voice input depends on the browser.** Absent in Firefox entirely; in Chrome
+   it routes audio to a Google service. Both are stated in the UI rather than
+   discovered.
+6. **RCA candidate causes are aggregated, not reasoned.** The agent ranks
    mechanisms that recorded evidence names. It does not build a causal *tree*
    down to a systemic cause, and it cannot infer a mechanism nobody wrote down.
    That is the deliberate trade for being unable to produce a confident RCA about
    a pump it has no evidence for.
-2. **Compliance decides 5 of 20 requirements for a pump.** The rest need a
+7. **Compliance decides 5 of 20 requirements for a pump.** The rest need a
    permit system (not connected), records the corpus does not hold, or human
    judgement on procedure text. Reported as `not_evaluable`, never as passing.
-3. **All 20 requirements are `paraphrase_for_demo`.** No verbatim regulatory text
+8. **All 20 requirements are `paraphrase_for_demo`.** No verbatim regulatory text
    is loaded, because none was supplied. The schema, provenance field and
    evaluation logic are real; the clause wording is not quotable and the API
    says so on every response.
-4. **Lessons learned has two incidents to compare against.** The four signals
+9. **Lessons learned has two incidents to compare against.** The four signals
    and the thresholds are real, but the discrimination they provide is barely
    exercised at this corpus size. More incident reports is the single highest-
    value data addition.
-5. **No abstractive generation without a credential, and correctness is
+10. **No abstractive generation without a credential, and correctness is
    therefore ungraded.** The extractive answerer produces real cited answers with
    no credential, so the copilot is not merely a search box. But grading answers
    against reference text needs a judge, so answer correctness is reported as
    `not_measurable` rather than as a number.
-6. **Extraction cannot combine two half-answers into one sentence.** It selects
+11. **Extraction cannot combine two half-answers into one sentence.** It selects
    sentences; it does not synthesise. A question whose answer is spread across
    two documents gets both sentences, not the synthesis a reader might want.
    That is the deliberate trade for being structurally unable to hallucinate.
-7. **False abstention rate is 0.095** — 2 of 21 answerable questions withheld.
+12. **False abstention rate is 0.095** — 2 of 21 answerable questions withheld.
    Both are vocabulary mismatches: the answer is correct but reuses none of the
    question's distinctive words ("which documents *describe* this location"),
    and the relevance measure is lexical. An entailment model would fix it; a
    lower threshold would only trade these for wrong answers.
-8. **One unanswerable question is answered with a caveat.** "What is the NPSH
+13. **One unanswerable question is answered with a caveat.** "What is the NPSH
    required for P-101B?" scores 0.36 relevance against a 0.34 floor, because the
    corpus genuinely *discusses* NPSH — an MOC notes the datasheet values no
    longer describe the machine — without stating the value. Nudging the floor to
    0.38 would score 4/4 and mean nothing; the threshold is set from measured
    separation, not from this question.
-9. **Comparative questions score 0.667 context recall** (3 questions). "Which of
+14. **Comparative questions score 0.667 context recall** (3 questions). "Which of
    the two pumps has more downtime?" names no parseable tag, so the graph leg has
    no anchor. Needs an aggregation router.
-10. **Diagnostic intent accuracy is 0.33** (3 questions). Two are phrased without a
+15. **Diagnostic intent accuracy is 0.33** (3 questions). Two are phrased without a
    causal marker. Deliberately *not* fixed by adding their exact wording to the
    rules — tuning a classifier to its own benchmark makes the benchmark
    meaningless.
-11. **Reranking is ~2.0 s of a ~3.1 s query.** A 6-layer cross-encoder over 25
+16. **Reranking is ~2.0 s of a ~3.1 s query.** A 6-layer cross-encoder over 25
    candidates on a container CPU. `RERANK_CANDIDATES` and `ONNX_THREADS` are the
    dials; a GPU or a smaller shortlist both help. Retrieval itself (BM25 + dense
    + graph) totals ~155 ms.
-12. **`Incident`, `MOC` and `CAPA` nodes are not created from prose.** The
+17. **`Incident`, `MOC` and `CAPA` nodes are not created from prose.** The
    documents ingest and link, but the structured nodes need the LLM extractor. So
    RCA reports `incidents: 0` for P-101B even though two incident reports about
    it are ingested and retrievable.
-13. **Bounding boxes are per block, not per sentence.** The source viewer does
+18. **Bounding boxes are per block, not per sentence.** The source viewer does
    highlight the cited sentence in the *extracted text*, but it locates it by
    string match, and the stored rectangle still surrounds the whole passage. So
    the rendered PDF page is shown without a box drawn on the cited line.
    Per-sentence geometry needs word offsets carried through chunk splitting,
    which is not done.
-14. **OCR reading order is good, not perfect.** Tesseract's `--psm 3` layout
+19. **OCR reading order is good, not perfect.** Tesseract's `--psm 3` layout
    analysis handles the corpus correctly, but a form with columns aligned across
    a page can still interleave. The per-word geometry needed to detect and fix
    that is stored; the correction is not written.
-15. **The P&ID is classified, not understood.** Vector density routes it to the
+20. **The P&ID is classified, not understood.** Vector density routes it to the
    drawing pipeline and its text layer is indexed, so tags on the sheet are
    searchable. Symbol detection, line tracing and topology reconstruction are
    not built, so `FEEDS` / `ISOLATES` edges do not exist.
 
-16. **One unresolved review item** in the demo corpus: `P-101` appears without an
+21. **One unresolved review item** in the demo corpus: `P-101` appears without an
    item suffix alongside `P-101A`/`P-101B`. It is flagged for review rather than
    silently asserted as a third pump — the intended behaviour, visible on the
    ingestion page.
-17. **Neo4j Community** has no `NODE KEY` constraints, so composite keys are
+22. **Neo4j Community** has no `NODE KEY` constraints, so composite keys are
     single-property unique constraints with existence enforced by the loader.
-18. **The corpus is synthetic content in real containers.** The PDFs are genuine
+23. **The corpus is synthetic content in real containers.** The PDFs are genuine
     PDF files — real text layers, real ruled tables, a real image-only scan, real
     vector geometry — but the plant they describe is invented and every page says
     so. Real industrial documents remain the single largest quality lever; see
     [data/corpus/SOURCES.md](data/corpus/SOURCES.md).
-19. **Not deployable.** No auth, no multi-tenancy, no PII redaction, no TLS, no
+24. **Not deployable.** No auth, no multi-tenancy, no PII redaction, no TLS, no
     rate limiting. See [docs/security.md](docs/security.md).
 
 ---
@@ -407,6 +462,7 @@ finds.
 * [docs/ingestion.md](docs/ingestion.md) — the write path: parsers, OCR, provenance, extraction, failure handling
 * [docs/retrieval.md](docs/retrieval.md) — the read path: three retrievers, fusion, reranking, extractive answering, abstention
 * [docs/agents.md](docs/agents.md) — RCA, compliance, lessons learned, and the proactive path
+* [docs/pid.md](docs/pid.md) — P&ID digitisation: four detectors, what each can and cannot do
 * [docs/ontology.md](docs/ontology.md) — labels, edges, and which are populated today
 * [docs/security.md](docs/security.md) — what is enforced and what is not
 * [docs/adr/0001-technology-choices.md](docs/adr/0001-technology-choices.md) — why each component, and what was rejected

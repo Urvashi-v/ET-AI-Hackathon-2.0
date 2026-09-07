@@ -28,6 +28,7 @@ from services.api.routers import (
     assets,
     compliance,
     documents,
+    drawings,
     events,
     feedback,
     graph_router,
@@ -188,6 +189,7 @@ API_PREFIX = "/api/v1"
 app.include_router(health.router)
 app.include_router(ingest.router, prefix=API_PREFIX)
 app.include_router(documents.router, prefix=API_PREFIX)
+app.include_router(drawings.router, prefix=API_PREFIX)
 app.include_router(query.router, prefix=API_PREFIX)
 app.include_router(assets.router, prefix=API_PREFIX)
 app.include_router(graph_router.router, prefix=API_PREFIX)
@@ -204,7 +206,39 @@ async def root() -> RedirectResponse:
     return RedirectResponse(url="/ui/index.html")
 
 
+class RevalidatingStaticFiles(StaticFiles):
+    """Serve the dashboard with must-revalidate caching.
+
+    The frontend has no build step and no content hashing -- ``js/api.js`` is
+    served under that exact name forever. With Starlette's default headers a
+    browser caches it heuristically and keeps using the copy it already has, so
+    a code change is simply invisible until someone thinks to hard-refresh. That
+    is not a testing annoyance: it means a deployed fix does not reach the
+    people who already have the page open, which for a superseded-procedure
+    warning is a safety problem.
+
+    ``no-cache`` does not mean "do not cache". It means "cache, but revalidate
+    before use": the browser keeps the file and sends an If-None-Match, and
+    Starlette answers 304 from the ETag it already computes. The cost is one
+    conditional request per asset; the benefit is that what is on screen is what
+    is on disk.
+
+    Content-hashed filenames would be better and would allow immutable caching,
+    but they need a build step, and adding one to avoid a header would be the
+    wrong trade for this project.
+    """
+
+    def is_not_modified(self, response_headers, request_headers) -> bool:  # type: ignore[override]
+        response_headers["Cache-Control"] = "no-cache"
+        return super().is_not_modified(response_headers, request_headers)
+
+    async def get_response(self, path: str, scope):  # type: ignore[override]
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
 if WEB_DIR.is_dir():
-    app.mount("/ui", StaticFiles(directory=str(WEB_DIR), html=True), name="ui")
+    app.mount("/ui", RevalidatingStaticFiles(directory=str(WEB_DIR), html=True), name="ui")
 else:  # pragma: no cover - only when the image is built without web/
     log.warning("api.web_dir_missing", path=str(WEB_DIR))

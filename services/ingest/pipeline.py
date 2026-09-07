@@ -37,7 +37,15 @@ from services.common.ids import mention_id as make_mention_id
 from services.common.logging import get_logger
 from services.common.schemas import CapabilityState, DataClass, DocumentType
 from services.agents import proactive
-from services.ingest import graph_writer, record_writer, records, revisions, storage
+from services.ingest import (
+    graph_writer,
+    pid,
+    pid_writer,
+    record_writer,
+    records,
+    revisions,
+    storage,
+)
 from services.ingest.chunk import Chunk, chunk_document
 from services.ingest.classify import classify
 from services.ingest.embeddings import get_embedding_provider
@@ -617,6 +625,18 @@ async def ingest_file(
     )
     if record_outcome is not None:
         result.stages.append(record_outcome)
+
+    # --- P&ID digitisation --------------------------------------------------
+    # Runs after the graph upsert because linking a detected tag to an Equipment
+    # node needs that node to exist. Drawings only: everything else skips the
+    # stage entirely rather than reporting an empty result that looks like a
+    # detector finding nothing.
+    if classification.doc_type is DocumentType.PID:
+        pid_outcome = await _digitise_drawing(
+            doc_id=doc_id, blob_path=blob.path, pages=parsed.page_count or 1, data_class=data_class
+        )
+        if pid_outcome is not None:
+            result.stages.append(pid_outcome)
 
     # --- proactive matching -------------------------------------------------
     # The graph just changed. This is the trigger for the proactive path: match
@@ -1267,6 +1287,61 @@ async def _extract_structured_records(
             items=0,
             detail=f"{type(exc).__name__}: {str(exc)[:200]}",
         )
+
+
+async def _digitise_drawing(
+    *, doc_id: str, blob_path: str, pages: int, data_class: DataClass
+) -> StageOutcome | None:
+    """Detect tags, instruments and lines on a drawing, and link them to assets.
+
+    The capability this unlocks is not "we read the drawing" — it is that
+    ``P-101B`` on the sheet becomes the *same node* as ``P-101B`` in the incident
+    report, with coordinates. Everything the viewer highlights depends on it.
+
+    Failures are contained: a drawing that will not digitise has still parsed,
+    chunked, indexed and reached the graph, and losing the overlay is a smaller
+    problem than losing the document.
+    """
+    try:
+        path = storage.resolve_blob(blob_path)
+    except Exception as exc:
+        log.error("pid.blob_unresolvable", doc_id=doc_id, error=str(exc))
+        return None
+
+    totals = {"detections": 0, "linked": 0, "connections": 0, "unlinked": set()}
+    errors: list[str] = []
+
+    for page in range(1, max(1, pages) + 1):
+        try:
+            result = pid.digitise_page(str(path), page)
+            written = await pid_writer.write(result, doc_id=doc_id, data_class=data_class)
+            totals["detections"] += written["detections"]
+            totals["linked"] += written["linked_assets"]
+            totals["connections"] += written["connections"]
+            totals["unlinked"].update(written["unlinked_tags"])
+        except Exception as exc:
+            errors.append(f"page {page}: {type(exc).__name__}")
+            log.error("pid.page_failed", doc_id=doc_id, page=page, error=str(exc))
+
+    detail = (
+        f"{totals['detections']} detection(s) across {pages} page(s); "
+        f"{totals['linked']} linked to canonical assets; "
+        f"{totals['connections']} connection(s) recovered"
+    )
+    if totals["unlinked"]:
+        # Named, not buried. A tag drawn on the sheet that the corpus has never
+        # ingested is the gap between what the plant has drawn and what it has
+        # recorded, and it is one of the more useful things this finds.
+        detail += f". Tags with no matching asset: {', '.join(sorted(totals['unlinked']))}"
+    if errors:
+        detail += f". Failed: {'; '.join(errors)}"
+
+    return StageOutcome(
+        "pid_digitisation",
+        CapabilityState.ERROR if errors and not totals["detections"] else CapabilityState.AVAILABLE,
+        items=totals["detections"],
+        detail=detail + ".",
+    )
 
 
 async def _run_proactive_matching(*, doc_id: str, title: str) -> StageOutcome | None:

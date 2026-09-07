@@ -99,6 +99,12 @@ export const api = {
   edgeEvidence: (assetId, edgeId) =>
     request(`/api/v1/graph/${encodeURIComponent(assetId)}/evidence/${encodeURIComponent(edgeId)}`),
 
+  // --- drawings (P&ID) ---
+  drawings: () => request('/api/v1/drawings'),
+  detections: (docId, params = {}) =>
+    request(`/api/v1/drawings/${encodeURIComponent(docId)}/detections?${new URLSearchParams(params)}`),
+  locateAsset: (tag) => request(`/api/v1/drawings/locate/${encodeURIComponent(tag)}`),
+
   // --- intelligence agents ---
   lessons: (payload) => request('/api/v1/lessons', { method: 'POST', body: payload }),
   incidents: (params = {}) => request(`/api/v1/lessons/incidents?${new URLSearchParams(params)}`),

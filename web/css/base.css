@@ -608,3 +608,62 @@ pre {
   .alert-body { padding: 13px; }
   .alert-body button { min-height: 38px; }
 }
+
+/* ============================================================== drawing viewer
+   A rendered page with an SVG overlay on top. The overlay is separate from the
+   raster so the same render serves every highlight, and so a box stays crisp
+   when the reader zooms instead of becoming a blurry rectangle. */
+.drawing-viewer { display: flex; flex-direction: column; }
+.drawing-toolbar {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  flex-wrap: wrap; padding: 9px 12px; border-bottom: 1px solid var(--line);
+  background: var(--bg-2);
+}
+.swatch { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 5px; }
+
+.drawing-stage { position: relative; overflow: auto; background: #fff; max-height: 70vh; }
+.drawing-page { display: block; width: 100%; height: auto; }
+.drawing-overlay {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  /* Boxes take clicks; the gaps between them do not, so the page can still be
+     panned and text selected around them. */
+  pointer-events: none;
+}
+.drawing-overlay .det { pointer-events: auto; cursor: pointer; transition: stroke-width .1s ease; }
+.drawing-overlay .det[data-detection]:hover { stroke-width: 3 !important; }
+.drawing-overlay .det.is-highlight {
+  /* Pulses once on load so the eye finds it on a dense A3 sheet. */
+  animation: det-pulse 1.4s ease-out 2;
+}
+@keyframes det-pulse {
+  0%, 100% { stroke-opacity: 1; }
+  50%      { stroke-opacity: .35; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .drawing-overlay .det.is-highlight { animation: none; }
+}
+
+.drawing-legend { padding: 9px 12px; border-top: 1px solid var(--line); }
+.detection-detail { padding: 12px; border-top: 1px solid var(--line); background: var(--bg-2); }
+
+/* Touch targets on small screens.
+   44px is the practical floor for a fingertip, and this interface is used with
+   gloves on. Applied by viewport rather than by class so a control added later
+   inherits it instead of being missed — the alternative is auditing every
+   button every time the page changes, which is the kind of discipline that
+   holds for about a week. */
+@media (max-width: 820px) {
+  button, .btn, a.btn, summary, input, select, textarea {
+    min-height: 44px;
+  }
+  button.small, .btn.small, a.btn.small {
+    min-height: 44px;
+    padding-top: 0;
+    padding-bottom: 0;
+    display: inline-flex;
+    align-items: center;
+  }
+  /* Toolbars of small toggles get horizontal room too, so two adjacent
+     filters are not one 44px-tall miss. */
+  .drawing-toolbar button, .chip-row button { padding-left: 14px; padding-right: 14px; }
+}

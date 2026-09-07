@@ -37,3 +37,13 @@ Pillow==10.4.0
 fastembed==0.5.1
 rapidfuzz==3.11.0
 numpy==2.2.1
+
+# OpenCV for P&ID symbol and line detection. The headless build: no GUI bindings,
+# no X11 dependency, ~40 MB instead of ~90 MB, and nothing in a server process
+# should be opening a window anyway.
+#
+# Used for classical CV only -- Hough circle and line transforms. Those are real
+# detectors with no training data and no learned weights, which is exactly why
+# they are the right first step: a deterministic detector whose failures are
+# explainable beats a model whose accuracy nobody has measured on this drawing.
+opencv-python-headless==4.10.0.84

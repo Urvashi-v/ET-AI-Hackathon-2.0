@@ -5,6 +5,23 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Ingestion · Asset &amp; Operations Brain</title>
   <link rel="stylesheet" href="css/base.css">
+  <style>
+    /* Graph growth. Bars rather than a node animation on purpose: an animated
+       graph filling with nodes is the single most tempting fake in this project,
+       and a bar chart of counts read from Neo4j cannot be faked without faking
+       the database. */
+    .growth-bars { display: flex; flex-direction: column; }
+    .growth-row {
+      display: grid; grid-template-columns: 132px 1fr 88px;
+      align-items: center; gap: 10px;
+      padding: 6px 13px; font-size: 0.78rem;
+    }
+    .growth-row + .growth-row { border-top: 1px solid var(--line); }
+    .growth-track { height: 7px; background: var(--bg-3); border-radius: 4px; overflow: hidden; }
+    .growth-fill { height: 100%; border-radius: 4px; transition: width .4s ease; }
+    .growth-count { text-align: right; font-variant-numeric: tabular-nums; }
+    .growth-delta { color: var(--ok); font-weight: 600; margin-left: 5px; }
+  </style>
 </head>
 <body>
   <header class="app-header" data-app-header></header>
@@ -80,6 +97,21 @@
 
       <div class="stack">
         <!-- The live panel. Every line here is a real event from the pipeline. -->
+        <section class="card" data-growth-card>
+          <div class="card-head">
+            <h2>Knowledge graph</h2>
+            <span class="small dim" data-growth-meta>reading…</span>
+          </div>
+          <div class="card-body flush">
+            <div class="growth-bars" data-growth></div>
+            <div class="small dim" style="padding:9px 13px;border-top:1px solid var(--line)">
+              Counted from Neo4j on every <code>graph.changed</code> event. Bars are
+              proportional to the largest label; the deltas are the difference between
+              two real reads, not an animation.
+            </div>
+          </div>
+        </section>
+
         <section class="card">
           <div class="card-head">
             <h2>Live pipeline</h2>
@@ -112,6 +144,7 @@
 
   <script type="module">
     import { api, subscribeEvents } from './js/api.js';
+    import { labelColour } from './js/graphview.js';
     import {
       esc, provBadge, renderLoading, renderError, renderEmpty, renderCapability,
       mountHeader, mountSystemStatus, wireAssetLinks, fmtDateTime, fmtNumber, tagChip,
@@ -161,13 +194,19 @@
           ${stages ? `<div class="row tight" style="margin-top:4px">${stages}</div>` : ''}
           ${e.error ? `<div class="small" style="color:var(--danger)">${esc(e.error)}</div>` : ''}`);
       },
-      'graph.changed': (e) => pushLine(`
+      'graph.changed': (e) => {
+        // Re-read rather than incrementing a local counter: the event says
+        // something changed, and Neo4j says what the graph now holds. Trusting
+        // the event payload would drift the moment one is missed.
+        refreshGrowth();
+        return pushLine(`
         ${stamp(e)} <span class="badge info">graph.changed</span>
         <strong>${esc(e.title || e.doc_id)}</strong>
         ${(e.assets || []).length
           ? `<div class="row tight" style="margin-top:4px">${e.assets.slice(0, 8).map((t) => tagChip(t)).join('')}</div>`
           : '<div class="small dim" style="margin-top:3px">no assets resolved in this document</div>'}`,
-        'var(--accent-dim)'),
+          'var(--accent-dim)');
+      },
       'ingest.finished': (e) => {
         const badge = { succeeded: 'ok', partial: 'warn', failed: 'danger' }[e.status] || 'neutral';
         pushLine(`${stamp(e)} <span class="badge ${badge}">${esc(e.status)}</span>
@@ -416,6 +455,65 @@
     }
 
     loadJobs();
+
+    // ------------------------------------------------- graph growth (day 5)
+
+    /**
+     * What the knowledge graph actually contains, re-read after every change.
+     *
+     * Deliberately a bar chart of counts rather than an animation of nodes
+     * appearing. A graph filling with nodes is the most tempting fake in this
+     * whole project -- it demos beautifully and proves nothing -- whereas a
+     * count read from Neo4j cannot be faked without faking the database.
+     *
+     * The delta is the difference between two real reads: whatever was there
+     * when this page loaded, against what is there now. Ingest a document and
+     * the numbers move because the graph moved.
+     */
+    let graphBaseline = null;
+
+    async function refreshGrowth() {
+      try {
+        const schema = await api.graphSchema();
+        // The endpoint returns [{label, n}], already ordered by count. Flattened
+        // to a map here so a baseline can be diffed against it by label.
+        const counts = Object.fromEntries(
+          (schema.node_counts || []).map((row) => [row.label, row.n]));
+        if (graphBaseline === null) graphBaseline = { ...counts };
+
+        const entries = Object.entries(counts)
+          .filter(([, n]) => n > 0)
+          .sort((a, b) => b[1] - a[1]);
+        const total = entries.reduce((sum, [, n]) => sum + n, 0);
+        const largest = entries.length ? entries[0][1] : 1;
+        const grown = entries.reduce(
+          (sum, [label, n]) => sum + Math.max(0, n - (graphBaseline[label] || 0)), 0);
+
+        $('[data-growth-meta]').innerHTML =
+          `${fmtNumber(total)} nodes · ${entries.length} label(s) in use`
+          + (grown ? ` <span class="growth-delta">+${fmtNumber(grown)} this session</span>` : '');
+
+        $('[data-growth]').innerHTML = entries.map(([label, n]) => {
+          const delta = n - (graphBaseline[label] || 0);
+          return `<div class="growth-row">
+            <span class="mono" style="color:${labelColour([label])}">${esc(label)}</span>
+            <span class="growth-track">
+              <span class="growth-fill" style="width:${Math.max(2, (n / largest) * 100)}%;
+                    background:${labelColour([label])}"></span>
+            </span>
+            <span class="growth-count mono">${fmtNumber(n)}${
+              delta > 0 ? `<span class="growth-delta">+${delta}</span>` : ''}</span>
+          </div>`;
+        }).join('') || '<div class="small dim" style="padding:13px">The graph is empty.</div>';
+      } catch (error) {
+        $('[data-growth-meta]').textContent = 'unavailable';
+        $('[data-growth]').innerHTML =
+          `<div class="small dim" style="padding:13px">${esc(error.message || 'Could not read the graph.')}</div>`;
+      }
+    }
+
+    refreshGrowth();
+
   </script>
 </body>
 </html>

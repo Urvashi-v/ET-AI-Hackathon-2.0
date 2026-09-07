@@ -1,0 +1,39 @@
+# Ultralytics dataset descriptor for P&ID equipment-symbol detection.
+#
+# NOTHING IS TRAINED. This file defines the structure a dataset would take; the
+# image and label directories are empty by design. See README.md for what the
+# dataset needs to contain and why this part of the pipeline is not implemented
+# rather than approximated.
+#
+# Classes deliberately mirror the equipment classes already in the knowledge
+# graph, so a detection maps onto an Equipment node without a translation layer
+# that would have to be kept in step with the ontology.
+
+path: data/pid_training
+train: images/train
+val: images/val
+test: images/test
+
+names:
+  0: centrifugal_pump
+  1: positive_displacement_pump
+  2: vessel
+  3: column
+  4: heat_exchanger
+  5: air_cooler
+  6: compressor
+  7: control_valve
+  8: manual_valve
+  9: relief_valve
+  10: filter_strainer
+
+# Split by sheet AND by drawing office, never randomly by image. Random splits
+# put near-identical sheets from one project on both sides of the split and
+# report an accuracy that will not survive a new contractor's drawings.
+split_policy: by_drawing_office
+
+# Report mAP@0.5 per class, not one headline figure. A single number hides the
+# failure that matters most: a model that finds every pump and no exchangers.
+metrics:
+  - mAP50_per_class
+  - recall_per_class
