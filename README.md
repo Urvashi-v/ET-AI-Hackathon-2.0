@@ -7,41 +7,59 @@ a provenance-carrying knowledge graph, and hybrid retrieval — with the five
 capabilities from the brief built as query patterns over it rather than as five
 separate demos.
 
-**Day 2 of the build.** This README separates what runs from what does not. See
+**Day 3 of the build.** This README separates what runs from what does not. See
 [Feature status](#feature-status).
 
 ---
 
 ## Measured results
 
-Produced by `python eval/run_eval.py` against a live stack, over 21 golden
-questions and the 10-document corpus described below. Re-runnable; every run is
+Produced by `python eval/run_eval.py` against a live stack, over 25 golden
+questions and the 11-document corpus described below. Re-runnable; every run is
 saved to `eval/results/` with the configuration it ran under.
 
 | Metric | Value | Notes |
 |---|---|---|
-| Context recall (answerable) | **0.941** | did retrieval reach the documents the question needs |
-| Context precision | 0.377 | 8 passages returned per question, unreranked |
-| Entity recall | 0.821 | asset tags correctly linked from the question |
-| Intent routing accuracy | 0.905 | deterministic rule classifier |
-| **Abstention recall on unanswerable** | **1.000** | 4 deliberately unanswerable questions, all refused |
+| Context recall (answerable) | **0.952** | did retrieval reach the documents the question needs |
+| Context precision | 0.410 | 8 passages returned per question, after cross-encoder reranking |
+| Entity recall | 0.844 | asset tags correctly linked from the question |
+| Intent routing accuracy | 0.840 | deterministic rule classifier |
+| **Abstention recall on unanswerable** | **0.750** | 4 deliberately unanswerable questions; 3 refused |
+| **False abstention rate** | **0.095** | 2 of 21 answerable questions withheld — the cost side of abstaining |
 | Abstentions naming a referral | 1.000 | never a bare refusal — names what's missing and who owns it |
-| Mention resolution rate | 100% | 92 mentions, all resolved to a canonical asset |
-| Multi-document assets | 46.7% | assets evidenced by more than one document |
-| **Cross-system assets** | **46.7%** | assets evidenced by more than one *source system* — the platform's actual claim |
-| p50 / p95 latency | 0.070 s / 0.199 s | end-to-end, retrieval-only configuration |
-| **Extractions with a verified verbatim span** | **56 / 56 (100%)** | every asserted fact traces to text that literally occurs in the source |
+| Mention resolution rate | 100% | 101 mentions, all resolved to a canonical asset |
+| Cross-system assets | 46.7% | assets evidenced by more than one *source system* |
+| Revision series reconciled | 5 | 1 with a real supersession chain, 0 needing human resolution |
+| p50 / p95 latency | 3.11 s / 3.96 s | end-to-end; the cross-encoder is ~2.0 s of it |
+| Extractions with a verified verbatim span | **100%** | every asserted fact traces to text that literally occurs in the source |
 | OCR mean confidence | 0.95 | 203 words recovered from the scanned document |
-| Answer correctness | **not measurable** | no generation provider configured — reported as such, never as zero |
+| Answer correctness | **not measurable** | no LLM configured; extraction answers, but correctness needs a grader |
 
-Corpus behind those numbers: 10 documents (4 real PDFs, 2 CSV exports, 4
-Markdown) → 91 chunks → 92 mentions → 15 canonical assets, 15 work orders,
-24 inspection readings, 20 atomised requirements, 56 extractions.
+Per category:
 
-**Read the last row carefully.** With no LLM configured the system produces no
-prose answers, so answer correctness cannot be measured. The harness reports
-`not_measurable` rather than `0.0`, because a zero would imply the system tried
-and failed.
+| Category | n | ctx recall | intent | abstained |
+|---|---|---|---|---|
+| lookup | 5 | 1.000 | 1.000 | 0.000 |
+| procedural | 4 | 1.000 | 1.000 | 0.000 |
+| aggregate | 3 | 1.000 | 1.000 | 0.000 |
+| diagnostic | 3 | 1.000 | 0.333 | 0.000 |
+| multi_hop | 3 | 1.000 | 1.000 | 0.333 |
+| comparative | 3 | 0.667 | 0.333 | 0.333 |
+| unanswerable | 4 | n/a | 1.000 | 0.750 |
+
+Corpus behind those numbers: 11 documents (4 real PDFs, 2 CSV exports, 5
+Markdown) → 98 chunks → 101 mentions → 15 canonical assets.
+
+**Two rows deserve reading together.** Abstention recall and false abstention are
+a pair: either can be driven to a perfect score by a system that always abstains
+or never does, and only both together say anything. 0.750 / 0.095 means the
+system refuses three of four unanswerable questions while withholding one in ten
+answerable ones.
+
+**Answer correctness stays `not_measurable`.** The extractive answerer produces
+real answers without a credential, but grading them against reference text needs
+a judge the project does not have. `not_measurable` rather than `0.0`, because a
+zero would imply the system tried and failed.
 
 ---
 
@@ -68,7 +86,7 @@ Then open **http://localhost:8000** (API docs at `/docs`, Neo4j browser at
 ```bash
 docker compose exec api python scripts/load_requirements.py   # compliance corpus
 python eval/run_eval.py                                       # the numbers above
-python -m pytest -q -m "not integration"                      # 300 unit tests
+python -m pytest -q -m "not integration"                      # 332 unit tests
 python -m pytest -q -m integration                            # 64 API tests
 ```
 
@@ -97,7 +115,7 @@ Honest categories. Nothing below is described as working when it is mocked.
 | **Real OCR** | tesseract 5.3, installed in the image. Offline, no credentials, no network call — the air-gap story stays intact. Per-word bbox and confidence, reading order grouped by `(block, paragraph, line)`. Verified: 203 words at 0.95 mean confidence from an image-only PDF. |
 | **Drawing detection** | Text-chars-per-vector-object ratio, decided per page *before* table extraction. Schematic 2.2, ruled table 35.5, prose 183.9. Also suppresses the phantom tables a schematic's grid lines would otherwise produce. |
 | **Extraction provenance** | Every chunk carries `extraction_method` and `extraction_confidence`. A character *read* from a text layer (1.0) and one *recognised* by OCR (the weakest word's confidence) are different kinds of fact, and the record says which. |
-| **Verbatim-span validation** | Every asserted fact must be supported by a span that literally occurs in the source. Rejections are **stored with their reason**, so the rate is measurable rather than merely claimed. Currently 56/56 verified. |
+| **Verbatim-span validation** | Every asserted fact must be supported by a span that literally occurs in the source. Rejections are **stored with their reason**, so the rate is measurable rather than merely claimed. Currently 100% verified. |
 | **Failure-vocabulary extraction** | ISO 14224-style codes recovered from free text, then compared with the CMMS-coded field: `agree` / `recoded` (dropdown default) / `disagree` (both kept, neither overwritten). |
 | **Idempotent ingestion** | Content-hash document ids, deterministic chunk/mention ids, upserts throughout. Re-submitting a corpus accepts 0 files and changes no counts — asserted by test. |
 | **Industrial tag normalisation** | Six spellings of one pump unify: `P-101B`, `P101B`, `P 101 B`, `10-P-101-B`, `P-101-B`, `P‑101‑B` (U+2011). Plus `CDU1-PUMP-101B`, `Pump 101 B`, `P-0101B`. ISA 5.1 instruments, line numbers, KKS designations. |
@@ -109,11 +127,18 @@ Honest categories. Nothing below is described as working when it is mocked.
 | **Graph retrieval (GraphRAG)** | Intent-scoped edge traversal plus two evidence routes: direct mention, and documents that `DESCRIBES` the asset — the route that finds a procedure whose steps never repeat the tag. |
 | **Reciprocal rank fusion** | Rank-based, intent-weighted. Degrades cleanly when a leg is unavailable. |
 | **Citations** | Every passage resolves to chunk, document, page and section. Graph edges resolve to the passages that asserted them. |
-| **Calibrated abstention** | Five independent signals. A question naming an asset not in the corpus is capped and refused, naming the asset. |
-| **Evaluation harness** | 21 golden questions across 6 categories, 19% deliberately unanswerable. Runs and reports even when accuracy is zero. |
+| **Calibrated abstention** | Six independent signals plus three hard gates that a weighted sum cannot outvote: an asset not in the corpus, a proper noun the corpus has never recorded (a different site), and an answer that does not cover what was asked. Each abstention names the specific thing that was missing. |
+| **Evaluation harness** | 25 golden questions across 6 categories plus 4 deliberately unanswerable. Measures abstention recall *and* false-abstention rate together, because either alone is gameable. Runs and reports even when accuracy is zero. |
 | **Dashboard** | 7 pages, vanilla HTML/CSS/JS, no framework, no build step. Force-directed graph explorer written from scratch. Ingestion page shows real jobs: pages, chunks, entities, graph nodes, per-document duration, how each document was read (text layer vs OCR, with confidence), drawing/table flags, and errors. |
 | **Provenance labelling** | Six `data_class` values on every displayed value, rendered as a badge. |
 | **Background jobs** | Reliable Redis queue with per-worker in-flight lists, ack/nack, stale reclaim on restart. |
+| **Dense retrieval** | Real `BAAI/bge-small-en-v1.5` through ONNX Runtime, 384-dim vectors in pgvector with an HNSW index. No API key, no torch, no network call after first download. Query and passage embedded asymmetrically, as the model was trained. |
+| **Cross-encoder reranking** | Real `Xenova/ms-marco-MiniLM-L-6-v2`. Reads query and passage together and reorders the fused shortlist. No hand-rolled similarity anywhere — a fabricated score would reorder plausibly and make every retrieval metric describe something else. |
+| **Extractive grounded answering** | Answers are built **only** from verbatim sentences in retrieved passages, so the copilot cannot answer a plant question from general knowledge — a structural guarantee, not a prompt instruction. Every sentence carries the citation of the chunk it came from. Needs no credential. |
+| **Query decomposition** | Compound and comparative questions split into independently retrieved sub-questions, folded back into fusion at a discount. Conservative by design: only clearly separable clauses. |
+| **Document revision lineage** | Revisions grouped by document number (`doc_id` is a content hash, so it cannot group them), ordered into revision *levels*, and linked with `SUPERSEDES` in both stores. Same-revision documents in different formats are recognised as renditions, not a sequence. Unorderable series are flagged for a human, never guessed. |
+| **Source viewer** | Clicking a citation opens the exact extracted span with the cited sentence highlighted, the rendered PDF page beside it, the entities found in it, and — first, before content — whether the document has been superseded. |
+| **Model warm-up** | ONNX sessions reach steady speed only after several inferences (measured: 15.6 s → 4.7 s → 1.8 s). Paid at startup on synthetic strings so the first real question is not the slowest. |
 | **SSE streaming** | Live ingestion events and streamed query pipeline stages — real stage completions, not timers. |
 
 ### Requires credentials — interface built, provider absent
@@ -170,7 +195,7 @@ Nothing is required to run the stack. To lift specific ceilings:
    usable sources per document class, and a manifest schema that requires
    provenance and licence per file. A real P&ID and ten real work orders would
    change more than any model upgrade.
-4. **Verbatim regulatory text.** All 20 shipped requirements are
+8. **Verbatim regulatory text.** All 20 shipped requirements are
    `paraphrase_for_demo` and are labelled as such everywhere, including on the
    compliance dashboard. See [data/requirements/README.md](data/requirements/README.md).
 
@@ -226,24 +251,26 @@ documents that share no identifier and were never linked in any source system.
 ```
 services/
   common/     config · logging · errors · db · graph · bus · tags · schemas · migrate
-  api/        FastAPI app + routers (health, ingest, query, assets, graph, rca,
-              compliance, notifications, feedback, events)
+  api/        FastAPI app + routers (health, ingest, documents, query, assets,
+              graph, rca, compliance, notifications, feedback, events)
   ingest/     storage · classify · parsers/ (pdf·text·docx·tabular·image) · ocr ·
-              chunk · extract · llm_extract · resolve · embeddings ·
+              chunk · extract · llm_extract · resolve · revisions · embeddings ·
               graph_writer · pipeline · worker
-  retrieval/  intent · lexical (BM25) · dense · graph_retrieval · fusion ·
-              generate · confidence · pipeline
+  retrieval/  intent (+decomposition) · lexical (BM25) · dense (pgvector) ·
+              graph_retrieval · fusion (RRF) · rerank (cross-encoder) ·
+              compose (extractive) · generate (LLM) · confidence · warmup ·
+              pipeline
 database/
-  migrations/ 5 SQL migrations — core schema, BM25 index, pgvector, enum
-              extension, extraction provenance + timing
+  migrations/ 6 SQL migrations — core schema, BM25 index, pgvector, enum
+              extension, extraction provenance + timing, revision lineage
   cypher/     constraints and indexes · ontology seed
-web/          7 HTML pages · css/base.css · js/{api,ui,graphview}.js
+web/          7 HTML pages · css/base.css · js/{api,ui,graphview,sourceviewer}.js
 data/
   corpus/     real documents (empty by design) + SOURCES.md + manifest schema
   synthetic/  deterministic generators (CSV/Markdown + real PDFs) + SCHEMA.md
   requirements/ atomised requirements with per-entry provenance
-eval/         golden.jsonl (21 questions) · run_eval.py · results/
-tests/        370 tests — 306 unit, 64 integration
+eval/         golden.jsonl (25 questions) · run_eval.py · results/
+tests/        396 tests — 332 unit, 64 integration
 docs/         architecture · ontology · security · adr/
 ```
 
@@ -273,46 +300,68 @@ python eval/run_eval.py
 Stated plainly, because a limitation you name is worth more than one a reviewer
 finds.
 
-1. **No answer generation without a credential.** Every query returns
-   `ABSTAIN_NO_GENERATOR`. Retrieval, fusion, citation binding and confidence all
-   run and the evidence is real, but there is no prose answer to grade.
-2. **Comparative questions score 0.0 context recall** (1 question). "Which of the
-   two pumps has more downtime?" names no parseable tag, so the graph leg has no
-   anchor. Needs an aggregation router.
-3. **Diagnostic intent accuracy is 0.33** (3 questions). Two are phrased without a
+1. **No abstractive generation without a credential, and correctness is
+   therefore ungraded.** The extractive answerer produces real cited answers with
+   no credential, so the copilot is not merely a search box. But grading answers
+   against reference text needs a judge, so answer correctness is reported as
+   `not_measurable` rather than as a number.
+2. **Extraction cannot combine two half-answers into one sentence.** It selects
+   sentences; it does not synthesise. A question whose answer is spread across
+   two documents gets both sentences, not the synthesis a reader might want.
+   That is the deliberate trade for being structurally unable to hallucinate.
+3. **False abstention rate is 0.095** — 2 of 21 answerable questions withheld.
+   Both are vocabulary mismatches: the answer is correct but reuses none of the
+   question's distinctive words ("which documents *describe* this location"),
+   and the relevance measure is lexical. An entailment model would fix it; a
+   lower threshold would only trade these for wrong answers.
+4. **One unanswerable question is answered with a caveat.** "What is the NPSH
+   required for P-101B?" scores 0.36 relevance against a 0.34 floor, because the
+   corpus genuinely *discusses* NPSH — an MOC notes the datasheet values no
+   longer describe the machine — without stating the value. Nudging the floor to
+   0.38 would score 4/4 and mean nothing; the threshold is set from measured
+   separation, not from this question.
+5. **Comparative questions score 0.667 context recall** (3 questions). "Which of
+   the two pumps has more downtime?" names no parseable tag, so the graph leg has
+   no anchor. Needs an aggregation router.
+6. **Diagnostic intent accuracy is 0.33** (3 questions). Two are phrased without a
    causal marker. Deliberately *not* fixed by adding their exact wording to the
    rules — tuning a classifier to its own benchmark makes the benchmark
    meaningless.
-4. **`Incident`, `MOC` and `CAPA` nodes are not created from prose.** The
+7. **Reranking is ~2.0 s of a ~3.1 s query.** A 6-layer cross-encoder over 25
+   candidates on a container CPU. `RERANK_CANDIDATES` and `ONNX_THREADS` are the
+   dials; a GPU or a smaller shortlist both help. Retrieval itself (BM25 + dense
+   + graph) totals ~155 ms.
+8. **`Incident`, `MOC` and `CAPA` nodes are not created from prose.** The
    documents ingest and link, but the structured nodes need the LLM extractor. So
    RCA reports `incidents: 0` for P-101B even though two incident reports about
    it are ingested and retrievable.
-5. **Bounding boxes are per block, not per sentence.** Citations resolve to a
-   page and a rectangle around the passage, which is enough to scroll to but not
-   to highlight one sentence inside it. Sentence-level anchoring needs the span
-   offsets carried through chunk splitting, which is not done.
-6. **OCR reading order is good, not perfect.** Tesseract's `--psm 3` layout
+9. **Bounding boxes are per block, not per sentence.** The source viewer does
+   highlight the cited sentence in the *extracted text*, but it locates it by
+   string match, and the stored rectangle still surrounds the whole passage. So
+   the rendered PDF page is shown without a box drawn on the cited line.
+   Per-sentence geometry needs word offsets carried through chunk splitting,
+   which is not done.
+10. **OCR reading order is good, not perfect.** Tesseract's `--psm 3` layout
    analysis handles the corpus correctly, but a form with columns aligned across
    a page can still interleave. The per-word geometry needed to detect and fix
    that is stored; the correction is not written.
-7. **The P&ID is classified, not understood.** Vector density routes it to the
+11. **The P&ID is classified, not understood.** Vector density routes it to the
    drawing pipeline and its text layer is indexed, so tags on the sheet are
    searchable. Symbol detection, line tracing and topology reconstruction are
    not built, so `FEEDS` / `ISOLATES` edges do not exist.
-8. **Reranking is not configured**, so the fused RRF order is used unchanged.
-   This is reported on every query rather than silently skipped.
-9. **One unresolved review item** in the demo corpus: `P-101` appears without an
+
+12. **One unresolved review item** in the demo corpus: `P-101` appears without an
    item suffix alongside `P-101A`/`P-101B`. It is flagged for review rather than
    silently asserted as a third pump — the intended behaviour, visible on the
    ingestion page.
-10. **Neo4j Community** has no `NODE KEY` constraints, so composite keys are
+13. **Neo4j Community** has no `NODE KEY` constraints, so composite keys are
     single-property unique constraints with existence enforced by the loader.
-11. **The corpus is synthetic content in real containers.** The PDFs are genuine
+14. **The corpus is synthetic content in real containers.** The PDFs are genuine
     PDF files — real text layers, real ruled tables, a real image-only scan, real
     vector geometry — but the plant they describe is invented and every page says
     so. Real industrial documents remain the single largest quality lever; see
     [data/corpus/SOURCES.md](data/corpus/SOURCES.md).
-12. **Not deployable.** No auth, no multi-tenancy, no PII redaction, no TLS, no
+15. **Not deployable.** No auth, no multi-tenancy, no PII redaction, no TLS, no
     rate limiting. See [docs/security.md](docs/security.md).
 
 ---
@@ -321,6 +370,7 @@ finds.
 
 * [docs/architecture.md](docs/architecture.md) — seven layers, three paths, entity resolution
 * [docs/ingestion.md](docs/ingestion.md) — the write path: parsers, OCR, provenance, extraction, failure handling
+* [docs/retrieval.md](docs/retrieval.md) — the read path: three retrievers, fusion, reranking, extractive answering, abstention
 * [docs/ontology.md](docs/ontology.md) — labels, edges, and which are populated today
 * [docs/security.md](docs/security.md) — what is enforced and what is not
 * [docs/adr/0001-technology-choices.md](docs/adr/0001-technology-choices.md) — why each component, and what was rejected

@@ -122,7 +122,7 @@ def evaluate_case(client: httpx.Client, case: dict[str, Any]) -> dict[str, Any]:
     )
 
     mode = payload.get("confidence", {}).get("mode")
-    abstained = mode in ("ABSTAIN_AND_ROUTE", "ABSTAIN_NO_GENERATOR")
+    abstained = mode in ("ABSTAIN_AND_ROUTE", "ABSTAIN_NO_ANSWER")
     should_abstain = case["category"] in UNANSWERABLE
 
     # An abstention on an unanswerable question is only *correct* if it names
@@ -211,17 +211,18 @@ def summarise(results: list[dict[str, Any]], system: dict[str, Any]) -> dict[str
             "routed_referral_rate": mean(
                 [float(r["abstention_is_routed"]) for r in unanswerable if r["abstained"]]
             ),
-            # With no generator every answer abstains, so this figure is not
-            # informative in that configuration and is reported as such.
-            "false_abstention_rate": (
-                mean([float(r["abstained"]) for r in answerable]) if generation_available else None
-            ),
-            "false_abstention_note": (
-                None
-                if generation_available
-                else "Not meaningful: with no generation provider every query returns "
-                "ABSTAIN_NO_GENERATOR by design."
-            ),
+            # Measured unconditionally. This used to be reported as "not
+            # meaningful without a generator", which was true when the only
+            # answerer was an LLM and every query therefore abstained. The
+            # extractive answerer needs no credential, so abstention is now a
+            # real decision on every query and the rate at which it fires on
+            # answerable questions is a real cost -- a useful answer withheld.
+            #
+            # It is the counterweight to recall_on_unanswerable: either number
+            # alone can be driven to 1.0 by a system that always abstains or
+            # never does, and only the pair says anything.
+            "false_abstention_rate": mean([float(r["abstained"]) for r in answerable]),
+            "false_abstention_note": None,
         },
         "answer_quality": (
             {

@@ -26,6 +26,14 @@ python-docx==1.1.2
 # contract requires. Both are inert unless OCR_PROVIDER is set.
 pypdfium2==4.30.0
 pytesseract==0.3.13
-Pillow==11.0.0
+Pillow==10.4.0
+# --- embeddings and reranking ---
+# fastembed runs real models through ONNX Runtime. Chosen over
+# sentence-transformers because it needs no torch: ~90 MB of dependency instead
+# of ~2.5 GB, which keeps the image small enough to rebuild repeatedly. The
+# models are the real published ones (BAAI/bge-small-en-v1.5 for embeddings,
+# Xenova/ms-marco-MiniLM-L-6-v2 cross-encoder for reranking), downloaded once
+# and cached; no API key, and no network call after the first run.
+fastembed==0.5.1
 rapidfuzz==3.11.0
 numpy==2.2.1

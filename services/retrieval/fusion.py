@@ -40,6 +40,13 @@ INTENT_WEIGHTS: dict[QueryIntent, dict[str, float]] = {
 }
 
 
+#: A leg named ``<retriever>:sub<n>`` ran the retriever over a decomposed
+#: sub-question rather than the whole question. It inherits its base retriever's
+#: intent weight, discounted: a passage found only by a fragment of the question
+#: is real evidence, but weaker than one found by the question entire.
+SUB_QUESTION_DISCOUNT = 0.6
+
+
 @dataclass(slots=True)
 class FusedResult:
     chunk_id: str
@@ -49,11 +56,26 @@ class FusedResult:
 
     @property
     def retriever_summary(self) -> str:
-        return "+".join(sorted(self.contributions)) or "none"
+        """Base retriever names, deduped -- what the citation displays.
+
+        ``lexical`` and ``lexical:sub2`` are the same strategy; showing both
+        would suggest two independent retrievers agreed when only one did.
+        """
+        return "+".join(sorted({name.partition(":")[0] for name in self.contributions})) or "none"
+
+    @property
+    def base_retrievers(self) -> set[str]:
+        return {name.partition(":")[0] for name in self.contributions}
 
 
 def weights_for(intent: QueryIntent) -> dict[str, float]:
     return INTENT_WEIGHTS.get(intent, {"lexical": 1.0, "dense": 1.0, "graph": 1.0})
+
+
+def leg_weight(name: str, weights: dict[str, float]) -> float:
+    base, separator, _ = name.partition(":")
+    weight = weights.get(base, 1.0)
+    return weight * SUB_QUESTION_DISCOUNT if separator else weight
 
 
 def reciprocal_rank_fusion(
@@ -76,7 +98,7 @@ def reciprocal_rank_fusion(
     payloads: dict[str, dict[str, Any]] = {}
 
     for retriever, results in ranked_lists.items():
-        weight = weights.get(retriever, 1.0)
+        weight = leg_weight(retriever, weights)
         for rank, item in enumerate(results, start=1):
             key = item.get(id_field)
             if not key:

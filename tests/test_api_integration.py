@@ -197,7 +197,7 @@ class TestQuery:
         ).json()
         if body["generation"]["state"] != "available":
             assert body["answer"] is None
-            assert body["confidence"]["mode"] == "ABSTAIN_NO_GENERATOR"
+            assert body["confidence"]["mode"] == "ABSTAIN_NO_ANSWER"
             assert body["generation"]["required_env"]
 
     def test_the_query_is_logged_for_audit_and_replayable(self, client):

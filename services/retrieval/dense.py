@@ -85,7 +85,7 @@ async def search(question: str, *, top_k: int = 50) -> DenseResult:
          ORDER BY e.embedding <=> %(vec)s::vector
          LIMIT %(top_k)s
         """,
-        {"vec": _to_pgvector(vector), "model": settings.embedding_model, "top_k": top_k},
+        {"vec": _to_pgvector(vector), "model": settings.active_embedding_model, "top_k": top_k},
     )
     for rank, row in enumerate(rows, start=1):
         row["rank"] = rank
@@ -94,7 +94,7 @@ async def search(question: str, *, top_k: int = 50) -> DenseResult:
     return DenseResult(
         state=CapabilityState.AVAILABLE,
         rows=rows,
-        detail=f"model={settings.embedding_model}",
+        detail=f"model={settings.active_embedding_model}",
         elapsed_ms=(time.perf_counter() - started) * 1000,
     )
 

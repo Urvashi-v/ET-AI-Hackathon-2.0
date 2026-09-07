@@ -1,19 +1,27 @@
 """The read path: question in, grounded and cited answer out.
 
-    understand -> parallel retrieve (lexical | dense | graph) -> RRF fusion
-        -> rerank -> context assembly -> grounded generation -> citation binding
-        -> verification -> confidence -> answer or abstain
+    understand -> decompose -> parallel retrieve (lexical | dense | graph,
+        for the question and each sub-question) -> RRF fusion -> cross-encoder
+        rerank -> context assembly -> grounded answer -> citation binding
+        -> claim verification -> confidence -> answer or abstain
 
 Every stage reports its own state, so the response says which legs ran, which
 were unavailable and why, and how each contributed. That is what makes the
 system inspectable rather than a black box, and it is what the evaluation
 harness measures.
 
-Two stages are capability-gated and say so rather than being faked:
-``dense`` (needs an embedding provider) and ``generation`` (needs an LLM
-provider). With neither configured the endpoint still performs real query
-understanding, real BM25, real graph traversal, real fusion and real citation
-binding, and returns the evidence with ``ABSTAIN_NO_GENERATOR``.
+**Answering never depends on a credential.** The default answerer is extractive:
+it selects verbatim sentences from retrieved passages, so it is incapable of
+answering a plant-specific question from general knowledge. An LLM, when
+``LLM_PROVIDER`` is configured, replaces it with abstractive prose under citation
+binding and verbatim verification. ``answer_method`` on the response says which
+one produced the text, because the two carry different risks.
+
+Capability-gated stages report their state rather than being faked: ``dense``
+needs an embedding provider, ``rerank`` needs a reranker model, ``generation``
+needs an LLM. With none of them configured the endpoint still performs real query
+understanding, real BM25, real graph traversal, real fusion, real extraction and
+real citation binding.
 """
 
 from __future__ import annotations
@@ -21,6 +29,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from dataclasses import dataclass, field
 from typing import Any
 
 from services.common import db
@@ -28,7 +37,9 @@ from services.common.config import get_settings
 from services.common.ids import request_id
 from services.common.logging import get_logger
 from services.common.schemas import (
+    AnswerClaim,
     CapabilityState,
+    CapabilityStatus,
     Citation,
     ConfidenceMode,
     DataClass,
@@ -39,8 +50,9 @@ from services.common.schemas import (
     SuggestedAction,
     UserContext,
 )
+from services.retrieval import compose as compose_mod
 from services.retrieval import confidence as confidence_mod
-from services.retrieval import dense, fusion, generate, graph_retrieval, lexical
+from services.retrieval import dense, fusion, generate, graph_retrieval, lexical, rerank
 from services.retrieval.intent import QueryUnderstanding, understand
 
 log = get_logger(__name__)
@@ -94,6 +106,21 @@ async def answer_question(
     if gra_rows:
         ranked_lists["graph"] = gra_rows
 
+    # --- 3b. sub-question retrieval ----------------------------------------
+    # A compound question retrieved as one string can land between its two
+    # answers and reach neither. Each sub-question gets its own lexical and dense
+    # pass, folded into the same fusion at a discount.
+    if understanding.sub_questions:
+        sub_legs, sub_lists = await _run_sub_questions(understanding, settings)
+        legs.extend(sub_legs)
+        ranked_lists.update(sub_lists)
+
+    # Terms the corpus has never recorded. Same class of problem as an asset tag
+    # with no node -- the question names something the system has never heard of
+    # -- but reached through the inverted index, because a site or plant name is
+    # not an equipment tag and the entity layer never sees it.
+    unknown_terms = await lexical.unknown_proper_nouns(question)
+
     # --- 4. fusion ---------------------------------------------------------
     fused = fusion.reciprocal_rank_fusion(
         ranked_lists,
@@ -102,27 +129,16 @@ async def answer_question(
     )
 
     # --- 5. rerank ---------------------------------------------------------
-    # A cross-encoder reranker is the highest-ROI quality intervention available,
-    # and it is a capability boundary like the others: with RERANKER_PROVIDER=none
-    # the fused order is used unchanged and the response says so, rather than
-    # claiming a rerank happened.
+    # RRF fuses on rank, which knows nothing about what the passages say. A
+    # cross-encoder reads the query and passage together and is the highest-ROI
+    # quality step available -- but it is expensive, so it runs over the fused
+    # shortlist rather than the corpus. With RERANKER_PROVIDER=none the fused
+    # order is used unchanged and the response says so.
     final_k = top_k or settings.retrieval_final_k
-    if settings.reranker_provider == "none":
-        legs.append(
-            RetrievalLeg(
-                strategy="rerank",
-                state=CapabilityState.NOT_CONFIGURED,
-                candidates=len(fused),
-                elapsed_ms=0.0,
-                detail="Cross-encoder reranking is not configured; the fused RRF order is used "
-                "unchanged. This is reported, not silently skipped.",
-                required_env=["RERANKER_PROVIDER"],
-            )
-        )
-    selected = fused[:final_k]
-
-    # --- 6. context assembly ----------------------------------------------
-    passages = await _hydrate(selected)
+    shortlist = fused[: settings.rerank_candidates]
+    hydrated = await _hydrate(shortlist)
+    rerank_leg, passages = await _rerank(question, hydrated, final_k)
+    legs.append(rerank_leg)
     citations = [
         Citation(
             marker=p.marker,
@@ -142,17 +158,16 @@ async def answer_question(
         for p in passages
     ]
 
-    # --- 7-8. generation + verification ------------------------------------
-    generation = await generate.generate(
+    # --- 7-8. answering + verification -------------------------------------
+    answer = await _answer(
         question=question,
+        understanding=understanding,
         passages=passages,
         graph_facts=gra_result.facts if gra_result else [],
-        role=ctx.role,
-        site=ctx.site,
-        work_order=ctx.work_order,
+        ctx=ctx,
     )
     for citation in citations:
-        if citation.marker in generation.used_markers:
+        if citation.marker in answer.used_markers:
             citation.quote_verified = True
 
     # --- 9. confidence and routing ----------------------------------------
@@ -165,15 +180,21 @@ async def answer_question(
             current_documents=sum(1 for p in passages if p.is_current),
             total_documents=len(passages),
             graph_facts=len(gra_result.facts) if gra_result else 0,
-            total_claims=generation.total_claims,
-            verified_claims=generation.verified_claims,
+            total_claims=answer.total_claims,
+            verified_claims=answer.verified_claims,
             anchors_missing=gra_result.anchors_missing if gra_result else [],
-            generator_available=generation.status.state is CapabilityState.AVAILABLE,
+            answerer_available=answer.text is not None,
+            answer_method=answer.method,
+            answer_relevance=answer.relevance,
+            missing_terms=answer.missing_terms,
+            unknown_terms=unknown_terms,
+            score_scale=("reranker" if rerank_leg.state is CapabilityState.AVAILABLE else "fusion"),
         )
     )
 
+    abstained = report.mode in (ConfidenceMode.ABSTAIN_AND_ROUTE, ConfidenceMode.ABSTAIN_NO_ANSWER)
     referral = None
-    if report.mode in (ConfidenceMode.ABSTAIN_AND_ROUTE, ConfidenceMode.ABSTAIN_NO_GENERATOR):
+    if abstained:
         referral = confidence_mod.build_referral(
             anchors_missing=gra_result.anchors_missing if gra_result else [],
             intent=understanding.intent.value,
@@ -186,13 +207,24 @@ async def answer_question(
         intent=understanding.intent,
         intent_confidence=understanding.intent_confidence,
         intent_method=understanding.method,
+        sub_questions=understanding.sub_questions,
         resolved_entities=understanding.entities,
-        answer=generation.answer,
-        answer_data_class=DataClass.MODEL_DERIVED if generation.answer else None,
-        generation=generation.status,
+        # An abstention withholds the answer text itself, not just a warning
+        # beside it. Showing a low-confidence answer and labelling it low
+        # confidence is how people end up acting on it anyway.
+        answer=None if abstained else answer.text,
+        answer_data_class=(
+            None if abstained or not answer.text else _answer_data_class(answer.method)
+        ),
+        answer_method=answer.method,
+        claims=[] if abstained else answer.claims,
+        abstained=abstained,
+        generation=answer.status,
         citations=citations,
         graph_facts=(gra_result.facts[:40] if gra_result else []),
+        graph_entities=(gra_result.entity_refs() if gra_result else []),
         retrieval=legs,
+        retrieval_sources=sorted({r for p in passages for r in p.retriever.split("+")} - {"none"}),
         confidence=report,
         referral=referral,
         actions=_suggest_actions(understanding, passages),
@@ -206,11 +238,180 @@ async def answer_question(
         intent=understanding.intent.value,
         mode=report.mode.value,
         confidence=report.score,
+        answer_method=answer.method,
         citations=len(citations),
+        claims=len(response.claims),
         graph_facts=len(response.graph_facts),
         latency_ms=latency_ms,
     )
     return response
+
+
+# ---------------------------------------------------------------------------
+# Answering
+# ---------------------------------------------------------------------------
+
+
+@dataclass(slots=True)
+class AnswerOutcome:
+    """The answer, however it was produced, in one shape.
+
+    Extraction and generation are interchangeable at this boundary, which is what
+    lets the LLM be genuinely optional rather than a hole in the product.
+    """
+
+    text: str | None
+    method: str | None
+    status: CapabilityStatus
+    claims: list[AnswerClaim] = field(default_factory=list)
+    used_markers: set[str] = field(default_factory=set)
+    total_claims: int = 0
+    verified_claims: int = 0
+    #: How much of the question the answer covers. 1.0 for abstractive answers,
+    #: which are not measured this way -- an LLM rephrases rather than reusing the
+    #: question's vocabulary, so term coverage would penalise good prose.
+    relevance: float = 1.0
+    missing_terms: list[str] = field(default_factory=list)
+
+
+async def _answer(
+    *,
+    question: str,
+    understanding: QueryUnderstanding,
+    passages: list[generate.ContextPassage],
+    graph_facts: list[Any],
+    ctx: UserContext,
+) -> AnswerOutcome:
+    """Produce an answer, preferring the LLM when one is configured.
+
+    When it is not -- the default -- extraction answers instead. This ordering is
+    deliberate: an LLM synthesises across passages better than sentence selection
+    can, and it is fenced by citation binding and verbatim verification. But its
+    absence must not turn the copilot into a search box, so extraction is a real
+    answerer rather than a placeholder.
+    """
+    llm_status = generate.generation_capability()
+    if llm_status.state is CapabilityState.AVAILABLE:
+        result = await generate.generate(
+            question=question,
+            passages=passages,
+            graph_facts=graph_facts,
+            role=ctx.role,
+            site=ctx.site,
+            work_order=ctx.work_order,
+        )
+        if result.status.state is CapabilityState.AVAILABLE and result.answer:
+            return AnswerOutcome(
+                text=result.answer,
+                method="abstractive",
+                status=result.status,
+                claims=_claims_from_generation(result, passages),
+                used_markers=result.used_markers,
+                total_claims=result.total_claims,
+                verified_claims=result.verified_claims,
+            )
+        # The provider is configured but the call failed. Fall through to
+        # extraction rather than returning nothing: degraded is better than dead,
+        # and the status still reports the failure.
+        log.warning("answer.generation_unavailable", detail=result.status.detail)
+
+    # Term rarity, so relevance weights the word the question turns on above the
+    # words that merely carry it. One indexed lookup, on terms already tokenized.
+    frequencies = await lexical.document_frequencies(lexical.tokenize_query(question))
+    composed = compose_mod.compose(
+        question=question,
+        intent=understanding.intent,
+        passages=passages,
+        entity_tags=understanding.entity_tags(),
+        doc_frequencies=frequencies,
+    )
+    verification = compose_mod.verify_composed(composed, passages)
+    state = CapabilityState.AVAILABLE if composed.text else CapabilityState.NOT_CONFIGURED
+    detail = composed.detail or ""
+    if llm_status.state is not CapabilityState.AVAILABLE:
+        detail += (
+            " Abstractive generation is not configured, so the answer is extracted "
+            "verbatim rather than written."
+        )
+    return AnswerOutcome(
+        text=composed.text,
+        method="extractive" if composed.text else None,
+        status=CapabilityStatus(
+            capability="grounded_answer",
+            state=state,
+            detail=detail.strip(),
+            required_env=(
+                llm_status.required_env
+                if llm_status.state is not CapabilityState.AVAILABLE
+                else []
+            ),
+        ),
+        claims=[
+            AnswerClaim(
+                text=c.text,
+                marker=c.marker,
+                chunk_id=c.chunk_id,
+                doc_id=c.doc_id,
+                doc_title=c.doc_title,
+                page=c.page,
+                char_start=c.char_start,
+                char_end=c.char_end,
+                verbatim=True,
+                score=round(c.score, 4),
+            )
+            for c in composed.claims
+        ],
+        used_markers=composed.used_markers,
+        total_claims=int(verification["total_claims"]),
+        verified_claims=int(verification["verified_claims"]),
+        relevance=composed.relevance,
+        missing_terms=composed.missing_terms,
+    )
+
+
+def _claims_from_generation(
+    result: generate.GenerationResult, passages: list[generate.ContextPassage]
+) -> list[AnswerClaim]:
+    """Split LLM prose into cited claims for the same UI treatment as extraction.
+
+    ``verbatim`` is False here and that is the honest value: the sentence was
+    written by the model, not copied from the passage, so it can be attributed to
+    a source but not located inside one.
+    """
+    if not result.answer:
+        return []
+    by_marker = {p.marker: p for p in passages}
+    claims: list[AnswerClaim] = []
+    for sentence in generate._SENTENCE_SPLIT.split(result.answer):
+        sentence = sentence.strip()
+        if not sentence:
+            continue
+        markers = generate._CITATION_MARKER.findall(sentence)
+        for number in markers or []:
+            passage = by_marker.get(f"C{number}")
+            if not passage:
+                continue
+            claims.append(
+                AnswerClaim(
+                    text=sentence,
+                    marker=passage.marker,
+                    chunk_id=passage.chunk_id,
+                    doc_id=passage.doc_id,
+                    doc_title=passage.doc_title,
+                    page=passage.page,
+                    verbatim=False,
+                )
+            )
+    return claims
+
+
+def _answer_data_class(method: str | None) -> DataClass:
+    """Extraction copies source text; generation writes new text.
+
+    Labelling extracted sentences MODEL_DERIVED would overstate what happened to
+    them -- they are the source document, selected.
+    """
+    return DataClass.REAL_SOURCE_DOCUMENT if method == "extractive" else DataClass.MODEL_DERIVED
 
 
 # ---------------------------------------------------------------------------
@@ -219,11 +420,17 @@ async def answer_question(
 
 
 async def _run_lexical(
-    question: str, understanding: QueryUnderstanding, top_k: int
+    question: str,
+    understanding: QueryUnderstanding,
+    top_k: int,
+    *,
+    question_override: str | None = None,
 ) -> tuple[RetrievalLeg, list[dict[str, Any]]]:
+    """BM25 over the abbreviation-expanded question, or over a sub-question."""
     started = time.perf_counter()
+    text = question_override or understanding.normalised
     try:
-        rows = await lexical.search(understanding.normalised, top_k=top_k)
+        rows = await lexical.search(text, top_k=top_k)
         elapsed = (time.perf_counter() - started) * 1000
         return (
             RetrievalLeg(
@@ -314,6 +521,95 @@ async def _run_graph(
             [],
             None,
         )
+
+
+async def _run_sub_questions(
+    understanding: QueryUnderstanding, settings: Any
+) -> tuple[list[RetrievalLeg], dict[str, list[dict[str, Any]]]]:
+    """Retrieve for each decomposed sub-question, in parallel with the others.
+
+    Only the lexical and dense legs are re-run. The graph leg is anchored on the
+    resolved entities, which are already the union across all sub-questions, so
+    traversing again per clause would return the same neighbourhood at the cost
+    of another round trip.
+    """
+    subs = understanding.sub_questions
+    # Half depth: these are supporting evidence, and a full-depth list per
+    # sub-question would let two fragments out-vote the whole question in fusion.
+    depth = max(5, settings.retrieval_top_k_lexical // 2)
+
+    tasks: list[Any] = []
+    for sub in subs:
+        tasks.append(_run_lexical(sub, understanding, depth, question_override=sub))
+        tasks.append(_run_dense(sub, depth))
+    outcomes = await asyncio.gather(*tasks)
+
+    legs: list[RetrievalLeg] = []
+    lists: dict[str, list[dict[str, Any]]] = {}
+    for index, sub in enumerate(subs):
+        for offset, strategy in enumerate(("lexical", "dense")):
+            leg, rows = outcomes[index * 2 + offset]
+            key = f"{strategy}:sub{index + 1}"
+            leg.leg_id = key
+            leg.sub_question = sub
+            legs.append(leg)
+            if rows:
+                lists[key] = rows
+    return legs, lists
+
+
+async def _rerank(
+    question: str, passages: list[generate.ContextPassage], final_k: int
+) -> tuple[RetrievalLeg, list[generate.ContextPassage]]:
+    """Score the shortlist with a cross-encoder and cut it to ``final_k``.
+
+    Markers are assigned *after* reordering, so ``C1`` is always the passage the
+    reranker put first. Assigning them before would make the citation numbering
+    disagree with the displayed order.
+    """
+    if not passages:
+        return (
+            RetrievalLeg(
+                strategy="rerank",
+                state=CapabilityState.AVAILABLE,
+                candidates=0,
+                elapsed_ms=0.0,
+                detail="Nothing was retrieved, so there was nothing to rerank.",
+            ),
+            [],
+        )
+
+    result = await rerank.get_reranker().rerank(question, [p.text for p in passages])
+
+    if result.state is CapabilityState.AVAILABLE:
+        ordered = [passages[i] for i in result.order]
+        for position, index in enumerate(result.order):
+            ordered[position].score = result.normalised(index)
+        detail = (
+            f"model={result.model}; reordered {len(passages)} candidate(s), "
+            f"kept top {min(final_k, len(ordered))}"
+        )
+    else:
+        # Fused order preserved. Reported, not silently skipped.
+        ordered = passages
+        detail = result.detail
+
+    kept = ordered[:final_k]
+    for position, passage in enumerate(kept, start=1):
+        passage.marker = f"C{position}"
+        passage.rank = position
+
+    return (
+        RetrievalLeg(
+            strategy="rerank",
+            state=result.state,
+            candidates=len(passages),
+            elapsed_ms=round(result.elapsed_ms, 2),
+            detail=detail,
+            required_env=result.required_env,
+        ),
+        kept,
+    )
 
 
 async def _skipped_leg(strategy: str, reason: str) -> Any:
@@ -449,7 +745,7 @@ async def _log_query(
                     response.confidence.score,
                     response.confidence.mode.value,
                     response.confidence.mode
-                    in (ConfidenceMode.ABSTAIN_AND_ROUTE, ConfidenceMode.ABSTAIN_NO_GENERATOR),
+                    in (ConfidenceMode.ABSTAIN_AND_ROUTE, ConfidenceMode.ABSTAIN_NO_ANSWER),
                     get_settings().llm_provider,
                     response.latency_ms,
                 ),

@@ -76,6 +76,19 @@ export const api = {
   query: (payload, signal) => request('/api/v1/query', { method: 'POST', body: payload, signal }),
   queryHealth: () => request('/api/v1/query/health'),
 
+  // --- source documents (what makes a citation clickable) ---
+  documents: (params = {}) => request(`/api/v1/documents?${new URLSearchParams(params)}`),
+  document: (docId) => request(`/api/v1/documents/${encodeURIComponent(docId)}`),
+  chunk: (docId, chunkId) =>
+    request(
+      `/api/v1/documents/${encodeURIComponent(docId)}/chunks/${encodeURIComponent(chunkId)}`,
+    ),
+  // Page images and raw files are served as binary, so these return URLs for
+  // <img src> / <a href> rather than going through the JSON request helper.
+  pageImageUrl: (docId, page) =>
+    `/api/v1/documents/${encodeURIComponent(docId)}/page/${encodeURIComponent(page)}.png`,
+  rawDocumentUrl: (docId) => `/api/v1/documents/${encodeURIComponent(docId)}/raw`,
+
   // --- assets and graph ---
   assets: (params = {}) => request(`/api/v1/assets?${new URLSearchParams(params)}`),
   assetStats: () => request('/api/v1/assets/stats'),

@@ -36,7 +36,7 @@ from services.common.ids import document_id as make_document_id
 from services.common.ids import mention_id as make_mention_id
 from services.common.logging import get_logger
 from services.common.schemas import CapabilityState, DataClass, DocumentType
-from services.ingest import graph_writer, storage
+from services.ingest import graph_writer, revisions, storage
 from services.ingest.chunk import Chunk, chunk_document
 from services.ingest.classify import classify
 from services.ingest.embeddings import get_embedding_provider
@@ -222,6 +222,15 @@ async def ingest_file(
     title = _derive_title(parsed.metadata, blob.original_filename)
     revision = _derive_revision(parsed.head_text)
     issued_on = _derive_issue_date(parsed.head_text)
+    # The identifier printed on the document, which is stable across revisions.
+    # doc_id cannot serve this purpose: it is a content hash, so every revision
+    # gets a different one by design.
+    doc_number = revisions.derive_doc_number(
+        title=title,
+        filename=blob.original_filename,
+        head_text=parsed.head_text,
+        doc_type=classification.doc_type,
+    )
 
     await db.execute(
         """
@@ -229,14 +238,14 @@ async def ingest_file(
             doc_id, content_hash, title, doc_type, doc_type_confidence, doc_type_method,
             data_class, source_system, source_path, original_filename, mime_type,
             byte_size, page_count, has_text_layer, revision, issued_on, blob_path,
-            ingest_job_id, metadata,
+            ingest_job_id, metadata, doc_number, doc_number_method,
             parser, ocr_engine, ocr_mean_confidence, ocr_word_count,
             vector_objects, is_drawing, tables_found
         ) VALUES (
             %(doc_id)s, %(content_hash)s, %(title)s, %(doc_type)s, %(conf)s, %(method)s,
             %(data_class)s, %(source_system)s, %(source_path)s, %(filename)s, %(mime)s,
             %(byte_size)s, %(page_count)s, %(has_text)s, %(revision)s, %(issued_on)s,
-            %(blob_path)s, %(job_id)s, %(metadata)s,
+            %(blob_path)s, %(job_id)s, %(metadata)s, %(doc_number)s, %(doc_number_method)s,
             %(parser)s, %(ocr_engine)s, %(ocr_conf)s, %(ocr_words)s,
             %(vector_objects)s, %(is_drawing)s, %(tables_found)s
         )
@@ -259,6 +268,8 @@ async def ingest_file(
             "has_text": parsed.has_text_layer,
             "revision": revision,
             "issued_on": issued_on,
+            "doc_number": doc_number.value if doc_number else None,
+            "doc_number_method": doc_number.method if doc_number else None,
             "blob_path": blob.path,
             "job_id": job_id,
             "parser": parsed.parser,
@@ -279,6 +290,28 @@ async def ingest_file(
     )
     result.doc_id = doc_id
 
+    # --- revision lineage --------------------------------------------------
+    # Recomputed for the whole series, because a revision can arrive out of
+    # order and an incremental update would leave the chain wrong. Runs before
+    # the graph write so the Document node carries the settled currency rather
+    # than an optimistic True that a later pass has to correct.
+    revision_report: dict[str, Any] = {"status": "no_doc_number"}
+    if doc_number:
+        revision_report = await revisions.reconcile(doc_number.value)
+        await graph_writer.link_revision_chain(revision_report)
+    result.stages.append(
+        StageOutcome(
+            "revisions",
+            CapabilityState.AVAILABLE,
+            items=int(revision_report.get("documents") or 0),
+            detail=_revision_detail(doc_number, revision_report),
+        )
+    )
+
+    settled = await db.fetch_one(
+        "SELECT is_current, superseded_by, valid_from, valid_to FROM documents WHERE doc_id = %s",
+        (doc_id,),
+    )
     await graph_writer.upsert_document(
         {
             "doc_id": doc_id,
@@ -288,9 +321,12 @@ async def ingest_file(
             "source_system": source_system,
             "content_hash": blob.content_hash,
             "revision": revision,
+            "doc_number": doc_number.value if doc_number else None,
             "issued_on": issued_on.isoformat() if issued_on else None,
             "page_count": parsed.page_count,
-            "is_current": True,
+            "is_current": bool(settled["is_current"]) if settled else True,
+            "valid_from": _iso(settled.get("valid_from")) if settled else None,
+            "valid_to": _iso(settled.get("valid_to")) if settled else None,
         }
     )
 
@@ -1115,6 +1151,30 @@ def _strategy_name(doc_type: DocumentType) -> str:
         DocumentType.INCIDENT_REPORT: "semantic sections",
         DocumentType.PID: "no prose chunking (topology, not text)",
     }.get(doc_type, "heading-aware prose")
+
+
+def _iso(value: Any) -> str | None:
+    """Dates cross into Cypher as ISO strings; ``date()`` parses them there."""
+    return value.isoformat() if value is not None else None
+
+
+def _revision_detail(doc_number: Any, report: dict[str, Any]) -> str:
+    """What the ingestion dashboard shows for the revision stage."""
+    if not doc_number:
+        return (
+            "No document number found, so this document forms no revision series. "
+            "Work-order and sensor exports legitimately have none."
+        )
+    status = report.get("status")
+    if status == "conflict":
+        return f"{doc_number.value}: {report.get('note')}"
+    superseded = int(report.get("superseded") or 0)
+    if superseded:
+        return (
+            f"{doc_number.value}: {report.get('documents')} revision(s), {superseded} "
+            f"superseded, ordered by {report.get('basis')}"
+        )
+    return f"{doc_number.value}: the only revision held (via {doc_number.method})"
 
 
 def _derive_title(metadata: dict[str, Any], filename: str) -> str:

@@ -147,3 +147,14 @@ CREATE INDEX requirement_standard IF NOT EXISTS FOR (r:Requirement) ON (r.source
 CREATE FULLTEXT INDEX entity_text IF NOT EXISTS
 FOR (n:Equipment|FunctionalLocation|Instrument)
 ON EACH [n.canonical_tag, n.fl_tag, n.tag, n.description];
+
+// Revision lineage. doc_number groups the revisions of one document series
+// (SOP-4412 Rev 2 and Rev 3), which doc_id cannot do: it is a content hash, so
+// every revision necessarily gets a different one. Indexed rather than
+// constrained unique -- several documents legitimately share a number, that
+// being the entire point.
+CREATE INDEX document_doc_number IF NOT EXISTS FOR (d:Document) ON (d.doc_number);
+
+// "Which procedures are current?" is asked on nearly every procedural query,
+// and answering it by scanning every Document does not scale past a real plant.
+CREATE INDEX document_is_current IF NOT EXISTS FOR (d:Document) ON (d.is_current);

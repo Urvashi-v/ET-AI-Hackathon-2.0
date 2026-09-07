@@ -26,7 +26,7 @@ from typing import Any
 
 from services.common import graph
 from services.common.logging import get_logger
-from services.common.schemas import DataClass, GraphFact, QueryIntent
+from services.common.schemas import DataClass, GraphEntityRef, GraphFact, QueryIntent
 
 log = get_logger(__name__)
 
@@ -73,6 +73,10 @@ class GraphRetrievalResult:
     anchors_missing: list[str] = field(default_factory=list)
     elapsed_ms: float = 0.0
     truncated: bool = False
+    #: Nodes touched during traversal, keyed by display id. Collected as the
+    #: facts are built rather than re-queried, so "which entities were used"
+    #: is answered by what actually happened rather than by a second guess.
+    entities: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def as_ranked_chunks(self) -> list[dict[str, Any]]:
         """Evidence chunks in graph-proximity order, for fusion."""
@@ -80,6 +84,50 @@ class GraphRetrievalResult:
             {"chunk_id": cid, "retriever": "graph", "rank": rank}
             for rank, cid in enumerate(self.evidence_chunk_ids, start=1)
         ]
+
+    def entity_refs(self, limit: int = 40) -> list[GraphEntityRef]:
+        """The graph nodes that contributed, anchors first.
+
+        This is what the copilot shows under "graph entities used". It is derived
+        from the traversal, so it cannot list a node the query did not touch.
+        """
+        refs = [
+            GraphEntityRef(
+                node_id=node_id,
+                label=meta["label"],
+                display=meta["display"],
+                role="anchor" if node_id in self.anchors_found else "neighbour",
+                hops=0 if node_id in self.anchors_found else 1,
+                data_class=meta.get("data_class"),
+            )
+            for node_id, meta in self.entities.items()
+        ]
+        refs.sort(key=lambda r: (r.role != "anchor", r.label, r.display))
+        return refs[:limit]
+
+    def note_entity(
+        self,
+        node_id: str,
+        labels: list[str],
+        data_class: DataClass,
+        title: str | None = None,
+    ) -> None:
+        """Record a node the traversal touched.
+
+        ``node_id`` is the identity used for fact deduplication; ``title`` is what
+        a human should see. They differ for documents, whose identity is a content
+        hash -- "doc_6de8cb37..." tells an engineer nothing, "incident 2019 seal
+        failure" tells them everything.
+        """
+        if not node_id or node_id in self.entities:
+            return
+        # Neo4j returns every label on the node; the most specific one is the
+        # useful one, and the ontology puts it last.
+        self.entities[node_id] = {
+            "label": labels[-1] if labels else "Node",
+            "data_class": data_class,
+            "display": title or node_id,
+        }
 
 
 _TRAVERSE = """
@@ -97,10 +145,12 @@ RETURN
     coalesce(s.canonical_tag, s.tag, s.doc_id, s.wo_id, s.incident_id,
              s.inspection_id, s.code, s.chunk_id, s.title, elementId(s)) AS subject,
     labels(s) AS subject_labels,
+    s.title AS subject_title,
     type(r) AS predicate,
     coalesce(e.canonical_tag, e.tag, e.doc_id, e.wo_id, e.incident_id,
              e.inspection_id, e.code, e.chunk_id, e.title, elementId(e)) AS object,
     labels(e) AS object_labels,
+    e.title AS object_title,
     properties(r) AS rel_props,
     coalesce(r.evidence_chunks, []) AS evidence_chunks,
     r.confidence AS confidence,
@@ -225,6 +275,13 @@ async def retrieve(
             continue
         seen.add(key)
         props = {k: v for k, v in (row.get("rel_props") or {}).items() if k != "evidence_chunks"}
+        fact_class = _data_class(row.get("data_class"))
+        result.note_entity(
+            str(row["subject"]), row["subject_labels"], fact_class, row.get("subject_title")
+        )
+        result.note_entity(
+            str(row["object"]), row["object_labels"], fact_class, row.get("object_title")
+        )
         result.facts.append(
             GraphFact(
                 subject=f"{str(row['subject'])} ({'/'.join(row['subject_labels'])})",

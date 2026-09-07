@@ -697,17 +697,96 @@ Process Engineering, Reliability Engineering, Operations, Plant Head.
 """
 
 
+# Revision 4 of the same procedure. It exists to exercise a code path that
+# nothing else in this corpus reaches: genuine supersession, where two documents
+# share a number and one demonstrably replaces the other.
+#
+# The other SOP-4412 pair in the corpus (Markdown source and scanned PDF) are the
+# *same* revision in two formats, so they prove the "renditions, not a sequence"
+# branch but never the supersession branch. This one does, and it also completes
+# the P-101B narrative: CAPA-89 from the 2022 incident asked for a suction
+# pressure confirmation step, and this is the revision that adds it.
+SOP_4412_REV4 = f"""# SOP-4412 Crude Charge Pump Startup
+
+> {BANNER}
+
+Document: SOP-4412
+Revision: 4
+Effective from: 2025-02-01
+Supersedes: SOP-4412 revision 3, effective 2024-03-01
+Applies to: P-101A, P-101B ({FUNCTIONAL_LOCATION}), {PLANT}
+Owner: Operations
+
+## 1 Scope
+
+This procedure covers the startup of the crude charge pumps P-101A and P-101B in
+the Crude Charge Pumping system of {PLANT}.
+
+Revision 4 closes CAPA-89 raised after incident INC-2022-19. A step confirming
+suction pressure before the pump is started has been added to section 3, and the
+minimum seal flush flow is now stated explicitly.
+
+## 2 Safety
+
+WARNING: A valid permit to work is required before any intervention on the pump
+or its auxiliaries. Lock-out / tag-out shall be applied to the motor isolator
+before mechanical work.
+
+PPE required: safety helmet, safety glasses, hearing protection, flame-retardant
+coverall, safety footwear, hand gloves.
+
+## 3 Preconditions
+
+Precondition: Confirm the pump has a valid handover from maintenance and no open
+work order restricting operation.
+
+Precondition: Confirm the suction drum V-102 level is above the low-low trip
+setpoint on LSHH-305.
+
+Precondition: Confirm suction pressure at PIC-101 is at least 2.5 barg before
+starting the pump. This step was added in revision 4 following INC-2022-19,
+where the pump was started against a closed suction valve and the mechanical
+seal ran dry.
+
+Precondition: Confirm the seal flush line is open and flush flow is at least
+2.0 litres per minute.
+
+## 4 Startup steps
+
+Step 1: Confirm the discharge valve is closed.
+
+Step 2: Open the suction valve fully and confirm suction pressure at PIC-101 is
+at least 2.5 barg.
+
+Step 3: Confirm seal flush flow is established at not less than 2.0 litres per
+minute before energising the motor.
+
+Step 4: Start the motor and confirm the pump reaches rated speed within 10
+seconds.
+
+Step 5: Open the discharge valve slowly and confirm discharge pressure is within
+the range 8.0 to 12.0 barg.
+
+Step 6: Confirm vibration at the outboard bearing is below 4.5 mm/s RMS.
+
+## 5 Records
+
+Record the startup in the shift log and close the associated work order.
+"""
+
+
 def write_documents(out_dir: Path) -> list[Path]:
     documents = {
         "incident_2019_seal_failure.md": INCIDENT_2019,
         "incident_2022_seal_failure.md": INCIDENT_2022,
         "sop_4412_crude_charge_pump_startup.md": SOP_4412,
+        "sop_4412_rev4_crude_charge_pump_startup.md": SOP_4412_REV4,
         "moc_2023_07_impeller_trim.md": MOC_2023,
     }
     written: list[Path] = []
     for name, content in documents.items():
         path = out_dir / name
-        path.write_text(content, encoding="utf-8")
+        _write(path, content)
         written.append(path)
     return written
 
@@ -733,8 +812,25 @@ def write_manifest(out_dir: Path, files: list[Path], seed: int) -> Path:
         "files": entries,
     }
     path = out_dir / "MANIFEST.json"
-    path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    _write(path, json.dumps(manifest, indent=2) + "\n")
     return path
+
+
+def _write(path: Path, content: str) -> None:
+    """Write with LF endings on every platform.
+
+    ``Path.write_text`` applies the platform's newline translation, so the same
+    generator run produces CRLF on Windows and LF on Linux. The bytes then
+    differ, the SHA-256 differs, and ingestion -- which deduplicates on content
+    hash -- treats the two as different documents. That is not hypothetical:
+    running the generator on the host and again in the container put four
+    near-duplicate documents into this corpus, and one of them joined a revision
+    series it did not belong to.
+
+    Determinism is a stated property of this corpus, and a document identity
+    that depends on which machine generated it is not deterministic.
+    """
+    path.write_text(content, encoding="utf-8", newline="\n")
 
 
 def main(argv: list[str] | None = None) -> int:

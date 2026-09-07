@@ -138,7 +138,7 @@ export function renderConfidence(report) {
     ANSWER: '<span class="badge ok">Answer</span>',
     ANSWER_WITH_CAVEAT: '<span class="badge warn">Answer with caveat</span>',
     ABSTAIN_AND_ROUTE: '<span class="badge danger">Abstained</span>',
-    ABSTAIN_NO_GENERATOR: '<span class="badge info">Evidence only</span>',
+    ABSTAIN_NO_ANSWER: '<span class="badge info">Evidence only</span>',
   }[report.mode] || `<span class="badge neutral">${esc(report.mode)}</span>`;
 
   const signals = Object.entries(report.signals || {})

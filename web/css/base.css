@@ -444,3 +444,104 @@ pre {
   .brand-sub { display: none; }
   .page-head { flex-direction: column; align-items: flex-start; }
 }
+
+/* ============================================================ copilot: claims,
+   graph entities, retrieval trace and the source viewer.
+
+   The design principle for this group: evidence should look reachable. A
+   citation that renders as plain text reads as a footnote nobody expects to
+   follow; one that renders as a control invites the check the system depends on
+   people actually making. */
+
+.claim-list { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 9px; }
+.claim-list li { line-height: 1.5; }
+.claim-text { color: var(--fg-0); }
+.claim-source { display: block; margin-top: 2px; }
+
+.cite-link {
+  color: var(--accent);
+  text-decoration: none;
+  font-size: 0.78rem;
+  padding: 0 2px;
+  border-radius: 3px;
+  white-space: nowrap;
+}
+.cite-link:hover, .cite-link:focus-visible { background: var(--accent-bg); text-decoration: underline; }
+
+.citation-row { cursor: pointer; position: relative; }
+.citation-row:hover, .citation-row:focus-visible { background: var(--bg-3); outline: none; }
+.citation-row:focus-visible { box-shadow: inset 2px 0 0 var(--accent); }
+.cite-open { color: var(--accent); opacity: 0; transition: opacity .12s ease; display: block; margin-top: 5px; }
+.citation-row:hover .cite-open, .citation-row:focus-visible .cite-open { opacity: 1; }
+
+.sub-question {
+  border-left: 2px solid var(--line-strong);
+  padding-left: 8px;
+  color: var(--fg-1);
+}
+
+.entity-chip {
+  display: inline-flex; align-items: baseline; gap: 6px;
+  padding: 3px 8px; border-radius: 4px;
+  background: var(--bg-3); border: 1px solid var(--line);
+  font-size: 0.76rem;
+}
+.entity-chip.anchor { border-color: var(--accent); background: var(--accent-bg); }
+.entity-label { color: var(--fg-2); text-transform: uppercase; font-size: 0.66rem; letter-spacing: .04em; }
+
+.trace-bar { height: 4px; background: var(--bg-3); border-radius: 2px; margin-top: 5px; overflow: hidden; }
+.trace-fill { height: 100%; background: var(--accent); border-radius: 2px; }
+.trace-fill.muted-fill { background: var(--fg-2); }
+
+/* Source viewer -- a right-hand sheet rather than a modal over the answer, so
+   the reader can compare the claim with its source without losing either. */
+.source-viewer {
+  position: fixed; inset: 0 0 0 auto;
+  width: min(900px, 92vw);
+  background: var(--bg-1);
+  border-left: 1px solid var(--line-strong);
+  box-shadow: -18px 0 48px rgba(0, 0, 0, .42);
+  display: flex; flex-direction: column;
+  z-index: 60;
+}
+.source-viewer-head {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 12px;
+  padding: 13px 16px; border-bottom: 1px solid var(--line);
+  background: var(--bg-2);
+}
+.source-viewer-body { padding: 16px; overflow-y: auto; flex: 1; }
+.source-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 18px; }
+.source-text {
+  white-space: pre-wrap;
+  font-size: 0.8rem; line-height: 1.6;
+  background: var(--bg-2); border: 1px solid var(--line);
+  border-radius: 5px; padding: 11px;
+  max-height: 46vh; overflow-y: auto;
+}
+.source-text mark { background: var(--accent-bg); color: var(--fg-0); border-bottom: 1px solid var(--accent); }
+.source-page { width: 100%; border: 1px solid var(--line); border-radius: 5px; background: #fff; }
+.mention-list { margin: 6px 0 0; padding-left: 18px; font-size: 0.76rem; line-height: 1.7; }
+
+@media (max-width: 860px) {
+  .source-viewer { width: 100vw; }
+  .source-grid { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* Inline notices. Used where the *standing* of a document has to be read before
+   its content -- a superseded procedure, an unresolved revision conflict. These
+   are deliberately heavier than a badge: missing one has consequences. */
+.notice {
+  border: 1px solid var(--line-strong);
+  border-left-width: 3px;
+  border-radius: 5px;
+  padding: 9px 11px;
+  font-size: 0.8rem;
+  line-height: 1.55;
+  margin-bottom: 12px;
+  background: var(--bg-2);
+}
+.notice strong { display: block; margin-bottom: 2px; }
+.notice.warn   { border-left-color: var(--warn);   background: var(--warn-bg); color: var(--fg-0); }
+.notice.danger { border-left-color: var(--danger); background: var(--danger-bg); color: var(--fg-0); }
+.notice.info   { border-left-color: var(--info);   background: var(--info-bg); color: var(--fg-0); }
+.notice a { color: inherit; }

@@ -93,6 +93,7 @@ services:
       NEO4J_URI: bolt://neo4j:7687
       REDIS_URL: redis://redis:6379/0
       BLOB_ROOT: /app/data/blobs
+      FASTEMBED_CACHE_PATH: /models
     ports:
       - "${API_PORT_HOST:-8000}:8000"
     volumes:
@@ -103,6 +104,7 @@ services:
       - ./tests:/app/tests:ro
       - ./data:/app/data
       - ./eval:/app/eval
+      - models:/models
     depends_on:
       postgres: {condition: service_healthy}
       neo4j: {condition: service_healthy}
@@ -132,11 +134,13 @@ services:
       NEO4J_URI: bolt://neo4j:7687
       REDIS_URL: redis://redis:6379/0
       BLOB_ROOT: /app/data/blobs
+      FASTEMBED_CACHE_PATH: /models
     volumes:
       - ./services:/app/services:ro
       - ./database:/app/database:ro
       - ./scripts:/app/scripts:ro
       - ./data:/app/data
+      - models:/models
     depends_on:
       postgres: {condition: service_healthy}
       neo4j: {condition: service_healthy}
@@ -145,6 +149,8 @@ services:
     restart: unless-stopped
 
 volumes:
+  # ONNX embedding and reranker models, cached so they download once.
+  models:
   pgdata:
   neo4jdata:
   neo4jlogs:

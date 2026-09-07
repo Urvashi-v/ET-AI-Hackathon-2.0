@@ -229,3 +229,67 @@ async def search(
         row["rank"] = rank
         row["retriever"] = "lexical"
     return rows
+
+
+#: A term needs to look like a name before its absence means anything. Common
+#: words are absent from small corpora all the time and that says nothing; a
+#: capitalised proper noun the corpus has never recorded is a different matter.
+_PROPER_NOUN = re.compile(r"^[A-Z][a-zA-Z]{3,}$")
+
+
+async def unknown_proper_nouns(question: str) -> list[str]:
+    """Proper nouns in the question that appear nowhere in the corpus.
+
+    The generalisation of the unknown-asset check. "What is the vibration alarm
+    setpoint for P-999Z?" is caught because P-999Z parses as a tag and no such
+    Equipment node exists. "How many seal failures at the Barauni refinery?" is
+    not -- Barauni is a site name, not an equipment tag, so nothing in the entity
+    layer notices it, and retrieval cheerfully returns seal failures from Haldia.
+
+    Both questions have the same shape: they name something the system has never
+    heard of. Checking the inverted index answers that directly and cheaply --
+    zero postings means the word occurs in no chunk of any document.
+
+    Deliberately narrow. Only capitalised, alphabetic, reasonably long tokens are
+    considered, so a corpus that happens not to contain "throughput" does not
+    start abstaining on questions that use the word.
+    """
+    candidates = {
+        token
+        for token in re.findall(r"\b[A-Za-z][a-zA-Z]{3,}\b", question)
+        if _PROPER_NOUN.match(token)
+    }
+    if not candidates:
+        return []
+
+    # Compared on the tokenizer's own terms, since that is what the index holds.
+    by_term: dict[str, str] = {}
+    for surface in candidates:
+        for term in tokenize_query(surface):
+            by_term.setdefault(term, surface)
+    if not by_term:
+        return []
+
+    rows = await db.fetch_all(
+        "SELECT DISTINCT term FROM chunk_terms WHERE term = ANY(%s)", (list(by_term),)
+    )
+    present = {row["term"] for row in rows}
+    return sorted({by_term[t] for t in by_term if t not in present})
+
+
+async def document_frequencies(terms: list[str]) -> dict[str, int]:
+    """How many chunks contain each term. Absent terms are reported as 0.
+
+    Used to weight terms by how much they narrow the question. "NPSH" occurs in
+    one chunk of this corpus and "required" in dozens, so failing to cover the
+    first is a far stronger signal that the question went unanswered than
+    failing to cover the second.
+    """
+    if not terms:
+        return {}
+    rows = await db.fetch_all(
+        "SELECT term, count(*)::int AS df FROM chunk_terms WHERE term = ANY(%s) GROUP BY term",
+        (list({t for t in terms}),),
+    )
+    found = {row["term"]: int(row["df"]) for row in rows}
+    return {term: found.get(term, 0) for term in terms}

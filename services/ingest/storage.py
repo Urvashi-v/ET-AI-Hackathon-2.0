@@ -167,13 +167,24 @@ def _blob_path(digest: str, ext: str) -> Path:
     return blob_root() / digest[:2] / digest[2:4] / f"{digest}{ext}"
 
 
-def read_blob(path: str) -> bytes:
-    """Read a stored blob, refusing anything outside the blob root."""
+def resolve_blob(path: str) -> Path:
+    """Resolve a stored blob path, refusing anything outside the blob root.
+
+    ``is_relative_to`` rather than a string prefix test: ``/data/blobs-old``
+    starts with ``/data/blobs`` as a string but is a different directory, and a
+    prefix check would wave it through. Symlinks are resolved first, so a link
+    planted inside the root cannot point out of it either.
+    """
     resolved = Path(path).resolve()
     root = blob_root().resolve()
-    if not str(resolved).startswith(str(root)):
+    if not resolved.is_relative_to(root):
         raise FileValidationError("Blob path is outside the storage root.")
-    return resolved.read_bytes()
+    return resolved
+
+
+def read_blob(path: str) -> bytes:
+    """Read a stored blob, refusing anything outside the blob root."""
+    return resolve_blob(path).read_bytes()
 
 
 def free_space_bytes() -> int:

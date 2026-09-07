@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from neo4j import AsyncDriver, AsyncGraphDatabase
+from neo4j import AsyncDriver, AsyncGraphDatabase, NotificationCategory
 from neo4j.exceptions import Neo4jError, ServiceUnavailable
 
 from services.common.config import get_settings
@@ -35,6 +35,13 @@ async def open_driver() -> AsyncDriver:
         auth=(settings.neo4j_username, settings.neo4j_password.get_secret_value()),
         max_connection_lifetime=3600,
         connection_acquisition_timeout=30,
+        # UNRECOGNIZED covers "this relationship type is not in the database".
+        # Intent-scoped traversal names every edge a diagnostic question *could*
+        # use, and a corpus that has no CAUSED_BY edges yet is a fact about the
+        # corpus, not a defect in the query -- so the server emits one warning per
+        # unused type per query. Left on, it buries real warnings under noise,
+        # which is the failure mode that matters. Every other category still logs.
+        notifications_disabled_categories=[NotificationCategory.UNRECOGNIZED],
     )
     await _driver.verify_connectivity()
     log.info("neo4j.driver_opened", uri=settings.neo4j_uri, database=settings.neo4j_database)

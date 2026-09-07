@@ -133,6 +133,8 @@ class QueryUnderstanding:
     time_window: dict[str, Any] | None = None
     requires_graph: bool = False
     aggregation: str | None = None
+    sub_questions: list[str] = field(default_factory=list)
+    decomposition_method: str | None = None
 
     def entity_tags(self) -> list[str]:
         return [e["canonical_tag"] for e in self.entities if e.get("canonical_tag")]
@@ -147,6 +149,8 @@ class QueryUnderstanding:
             "time_window": self.time_window,
             "requires_graph": self.requires_graph,
             "aggregation": self.aggregation,
+            "sub_questions": self.sub_questions,
+            "decomposition_method": self.decomposition_method,
         }
 
 
@@ -187,6 +191,8 @@ def understand(question: str, ctx: UserContext | None = None) -> QueryUnderstand
         QueryIntent.COMPARATIVE,
     )
 
+    sub_questions, decomposition_method = decompose(normalised, intent, entities)
+
     return QueryUnderstanding(
         original=question,
         normalised=normalised,
@@ -198,7 +204,121 @@ def understand(question: str, ctx: UserContext | None = None) -> QueryUnderstand
         time_window=_time_window_of(normalised),
         requires_graph=requires_graph,
         aggregation=aggregation,
+        sub_questions=sub_questions,
+        decomposition_method=decomposition_method,
     )
+
+
+# ---------------------------------------------------------------------------
+# Decomposition
+# ---------------------------------------------------------------------------
+
+#: A clause is only a sub-question if it carries enough content to retrieve on.
+#: Splitting "start the pump and close the valve" into two three-word fragments
+#: produces two useless queries and dilutes fusion with noise.
+_MIN_CLAUSE_WORDS = 4
+
+#: Coordinators that join two askable clauses. Deliberately narrow: "and" inside
+#: a noun phrase ("suction and discharge pressure") is not a question boundary,
+#: which is why a bare "and" only splits when the right-hand side opens with an
+#: interrogative -- see _CLAUSE_OPENER.
+_CONJUNCTION = re.compile(r"\s*(?:\band also\b|\band\b|;|\?)\s*", re.I)
+
+_CLAUSE_OPENER = re.compile(
+    r"^\s*(what|when|who|where|why|how|which|is|are|was|were|does|do|did|can|should|list|show)\b",
+    re.I,
+)
+
+
+def decompose(
+    text: str, intent: QueryIntent, entities: list[dict[str, Any]]
+) -> tuple[list[str], str | None]:
+    """Split a compound question into independently retrievable sub-questions.
+
+    The reason to bother: a single query vector for "what is the design pressure
+    of P-101B and when was it last inspected" sits between the datasheet and the
+    inspection report and may retrieve neither well. Two queries retrieve both,
+    and fusion recombines them.
+
+    Sub-questions are not decoration -- the pipeline actually runs the lexical and
+    dense legs for each one and folds the results into fusion. They are therefore
+    kept conservative: only splits that are clearly two askable clauses, or a
+    comparison over named entities. Everything else returns no decomposition and
+    the original question is retrieved as-is, which is the right default.
+
+    Rule-based rather than LLM-driven, for the same reason as the classifier: it
+    is deterministic, free, and the evaluation harness needs to be able to
+    attribute a retrieval change to the decomposition rather than to sampling.
+    """
+    stripped = text.strip()
+
+    # Comparison: retrieve for each side by name. "Compare P-101A and P-101B"
+    # against the corpus as one query favours whichever asset is documented more;
+    # asking about each separately gives both a fair chance of being retrieved.
+    tags = [e["canonical_tag"] for e in entities if e.get("canonical_tag")]
+    if intent is QueryIntent.COMPARATIVE and len(tags) >= 2:
+        frame = _comparison_frame(stripped, tags)
+        subs = [f"{frame} {tag}".strip() for tag in tags[:4]]
+        return _dedupe(subs, stripped), "comparative:per-entity"
+
+    # Conjunction: two clauses that each open like a question.
+    parts = [p.strip(" ,") for p in _CONJUNCTION.split(stripped) if p.strip(" ,")]
+    if len(parts) >= 2:
+        clauses = [p for p in parts if len(p.split()) >= _MIN_CLAUSE_WORDS]
+        # The first clause carries the interrogative in "what is X and when was Y";
+        # the later ones must open with one of their own to count as separable.
+        if len(clauses) >= 2 and all(_CLAUSE_OPENER.match(c) for c in clauses[1:]):
+            subs = _propagate_subject(clauses, tags)
+            return _dedupe(subs, stripped), "conjunction:clause-split"
+
+    return [], None
+
+
+def _comparison_frame(text: str, tags: list[str]) -> str:
+    """The question minus the entities, so each sub-question keeps the aspect.
+
+    "How does the vibration on P-101A compare with P-101B" -> frame
+    "How does the vibration on compare with" -> plus each tag. Ungrammatical, but
+    these strings are retrieval queries, not prose; BM25 and the bi-encoder care
+    about the content words, and "vibration" is the word that matters.
+    """
+    frame = text
+    for tag in tags:
+        frame = re.sub(re.escape(tag), " ", frame, flags=re.I)
+    frame = re.sub(r"\b(compare[ds]?|versus|vs\.?|between|against|with|and)\b", " ", frame, flags=re.I)
+    return re.sub(r"\s+", " ", frame).strip(" ?,")
+
+
+def _propagate_subject(clauses: list[str], tags: list[str]) -> list[str]:
+    """Carry the asset into clauses that only refer to it as "it".
+
+    "What is the design pressure of P-101B and when was it last inspected" --
+    the second clause retrieved alone matches every inspection in the corpus.
+    Appending the tag restores the subject that the pronoun stood in for.
+    """
+    if not tags:
+        return clauses
+    primary = tags[0]
+    out: list[str] = []
+    for clause in clauses:
+        has_tag = any(re.search(re.escape(t), clause, re.I) for t in tags)
+        if not has_tag and re.search(r"\b(it|its|that|this|the same)\b", clause, re.I):
+            out.append(f"{clause} {primary}")
+        else:
+            out.append(clause)
+    return out
+
+
+def _dedupe(subs: list[str], original: str) -> list[str]:
+    """Drop empties, duplicates, and anything that just restates the question."""
+    seen: set[str] = {original.lower().strip(" ?")}
+    out: list[str] = []
+    for sub in subs:
+        key = sub.lower().strip(" ?")
+        if key and key not in seen and len(key.split()) >= _MIN_CLAUSE_WORDS:
+            seen.add(key)
+            out.append(sub)
+    return out[:4]
 
 
 def _link_entities(text: str, ctx: UserContext) -> tuple[list[dict[str, Any]], list[str]]:

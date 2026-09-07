@@ -92,6 +92,14 @@
           <div class="card-body flush" data-citations></div>
         </section>
 
+        <section class="card" data-entities-card hidden>
+          <div class="card-head">
+            <h2>Graph entities used</h2>
+            <span class="small dim" data-entity-count></span>
+          </div>
+          <div class="card-body" data-entities></div>
+        </section>
+
         <section class="card" data-facts-card hidden>
           <div class="card-head">
             <h2>Knowledge graph facts</h2>
@@ -117,6 +125,14 @@
           <div class="card-body stack" data-actions></div>
         </section>
 
+        <section class="card" data-trace-card hidden>
+          <div class="card-head">
+            <h2>Retrieval trace</h2>
+            <span class="small dim" data-trace-total></span>
+          </div>
+          <div class="card-body flush" data-trace></div>
+        </section>
+
         <section class="card">
           <div class="card-head"><h2>Retrieval subsystem</h2></div>
           <div class="card-body stack" data-retrieval-health></div>
@@ -131,10 +147,14 @@
       esc, provBadge, renderLoading, renderError, renderEmpty, renderCapability,
       renderConfidence, mountHeader, mountSystemStatus, wireAssetLinks, tagChip, docTypeChip,
     } from './js/ui.js';
+    import { wireCitationLinks } from './js/sourceviewer.js';
 
     mountHeader('copilot.html');
     mountSystemStatus(api);
     wireAssetLinks();
+    // Delegated once: the answer and evidence panels are rebuilt on every query,
+    // so per-element handlers would accumulate.
+    wireCitationLinks();
 
     const $ = (sel) => document.querySelector(sel);
     let controller = null;
@@ -182,6 +202,8 @@
       show('[data-answer-card]', false);
       show('[data-citations-card]', false);
       show('[data-facts-card]', false);
+      show('[data-entities-card]', false);
+      show('[data-trace-card]', false);
       show('[data-confidence-card]', false);
       show('[data-referral-card]', false);
       show('[data-actions-card]', false);
@@ -200,6 +222,8 @@
 
       const citations = [];
       const facts = [];
+      const legs = [];
+      let graphEntities = [];
 
       try {
         await streamQuery(payload, {
@@ -212,26 +236,40 @@
             <div class="small dim" style="margin-top:3px">${esc(e.method)}</div>
             ${e.entities?.length ? `<div class="row tight" style="margin-top:5px">
               ${e.entities.map((x) => tagChip(x.canonical_tag)).join('')}
-              <span class="small dim">resolved via ${esc(e.entities[0].method)}</span></div>` : ''}`),
+              <span class="small dim">resolved via ${esc(e.entities[0].method)}</span></div>` : ''}
+            ${e.sub_questions?.length ? `<div class="stack tight" style="margin-top:6px">
+              <span class="small dim">Decomposed into ${e.sub_questions.length} sub-question(s), each retrieved separately:</span>
+              ${e.sub_questions.map((q) => `<span class="small mono sub-question">${esc(q)}</span>`).join('')}
+            </div>` : ''}`),
           retrieval: (e) => {
-            const badge = {
-              available: 'ok', provider_not_configured: 'warn',
-              disabled: 'neutral', error: 'danger', not_implemented: 'info',
-            }[e.state] || 'neutral';
+            legs.push(e);
+            const badge = LEG_BADGE[e.state] || 'neutral';
             pushStep(`
               <div class="row" style="justify-content:space-between">
-                <span><strong>${esc(e.strategy)}</strong> <span class="badge ${badge}">${esc(e.state)}</span></span>
+                <span><strong>${esc(e.leg_id || e.strategy)}</strong> <span class="badge ${badge}">${esc(e.state)}</span></span>
                 <span class="mono small">${e.candidates} cand · ${Number(e.elapsed_ms).toFixed(0)}ms</span>
               </div>
+              ${e.sub_question ? `<div class="small dim" style="margin-top:3px">for "${esc(e.sub_question)}"</div>` : ''}
               ${e.detail ? `<div class="small dim" style="margin-top:3px">${esc(e.detail)}</div>` : ''}
               ${e.required_env?.length ? `<div class="small mono" style="color:var(--warn);margin-top:3px">${esc(e.required_env.join(', '))}</div>` : ''}`);
           },
+          graph_entities: (e) => { graphEntities = e.entities || []; },
           graph_fact: (e) => facts.push(e),
           citation: (e) => citations.push(e),
           answer: (e) => {
             show('[data-answer-card]');
-            $('[data-answer-prov]').innerHTML = provBadge('model_derived');
-            $('[data-answer]').innerHTML = `<div style="white-space:pre-wrap">${esc(e.text)}</div>`;
+            $('[data-answer-prov]').innerHTML = provBadge(e.data_class || 'model_derived');
+            $('[data-answer]').innerHTML = renderAnswer(e);
+          },
+          abstained: () => {
+            show('[data-answer-card]');
+            $('[data-answer-prov]').innerHTML = '';
+            $('[data-answer]').innerHTML = `
+              <div class="notice warn">
+                <strong>Abstained.</strong> The evidence retrieved was not strong enough to
+                answer safely, so no answer is shown. The passages below are what was found —
+                judge them yourself.
+              </div>`;
           },
           generation: (e) => {
             if (e.state !== 'available') {
@@ -267,6 +305,8 @@
             $('[data-latency]').textContent = `${e.latency_ms} ms · ${e.query_id}`;
             renderCitations(citations);
             renderFacts(facts);
+            renderEntities(graphEntities);
+            renderTrace(legs, e.latency_ms);
           },
         }, { signal: controller.signal });
       } catch (error) {
@@ -281,6 +321,113 @@
 
     $('[data-stop]').addEventListener('click', () => controller?.abort());
 
+    // Rows are activated by click through the delegated handler in sourceviewer;
+    // this adds the keyboard equivalent, since they are focusable buttons.
+    document.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      const row = event.target.closest?.('.citation-row');
+      if (!row) return;
+      event.preventDefault();
+      row.click();
+    });
+
+    const LEG_BADGE = {
+      available: 'ok', provider_not_configured: 'warn',
+      disabled: 'neutral', error: 'danger', not_implemented: 'info',
+    };
+
+    /**
+     * The answer, as claims bound to the evidence each came from.
+     *
+     * Extractive answers are rendered claim by claim rather than as a paragraph,
+     * because each sentence is a verbatim span from a specific passage and
+     * clicking it should open that passage at that sentence. Abstractive
+     * answers keep their prose shape — a model's sentences do not map cleanly
+     * onto single passages, and pretending otherwise would overstate the link.
+     */
+    function renderAnswer(e) {
+      const method = e.method === 'extractive'
+        ? `<span class="badge info no-dot">Extracted verbatim</span>
+           <span class="small dim">Every sentence below is copied from a cited source. Nothing was written by a model.</span>`
+        : `<span class="badge warn no-dot">Model-written</span>
+           <span class="small dim">Synthesised prose, checked against its citations. Read the sources for anything safety-critical.</span>`;
+
+      const body = (e.claims?.length && e.method === 'extractive')
+        ? `<ol class="claim-list">${e.claims.map((c) => `
+            <li>
+              <span class="claim-text">${esc(c.text)}</span>
+              <a href="#" class="cite-link mono"
+                 data-cite-doc="${esc(c.doc_id)}"
+                 data-cite-chunk="${esc(c.chunk_id)}"
+                 data-cite-page="${esc(c.page ?? '')}"
+                 data-cite-text="${esc(c.text)}"
+                 title="Open ${esc(c.doc_title)}${c.page ? `, page ${esc(c.page)}` : ''}">[${esc(c.marker)}]</a>
+              <span class="small dim claim-source">${esc(c.doc_title)}${c.page ? ` · p${esc(c.page)}` : ''}</span>
+            </li>`).join('')}</ol>`
+        : `<div style="white-space:pre-wrap">${esc(e.text)}</div>`;
+
+      const sources = e.sources?.length
+        ? `<p class="small dim" style="margin:8px 0 0">Evidence found by:
+             ${e.sources.map((x) => `<span class="badge neutral no-dot">${esc(x)}</span>`).join(' ')}</p>`
+        : '';
+
+      return `<div class="stack tight">
+        <div class="row tight">${method}</div>
+        ${body}
+        ${sources}
+      </div>`;
+    }
+
+    /** Which graph nodes actually took part, anchors first. */
+    function renderEntities(entities) {
+      if (!entities.length) return;
+      show('[data-entities-card]');
+      $('[data-entity-count]').textContent = `${entities.length} node(s)`;
+      const anchors = entities.filter((x) => x.role === 'anchor');
+      const others = entities.filter((x) => x.role !== 'anchor');
+      const chip = (x) => `
+        <span class="entity-chip ${x.role === 'anchor' ? 'anchor' : ''}"
+              title="${esc(x.label)} · ${esc(x.node_id)}">
+          <span class="entity-label">${esc(x.label)}</span>
+          <span class="mono">${esc(x.display)}</span>
+        </span>`;
+      $('[data-entities]').innerHTML = `
+        <div class="stack tight">
+          ${anchors.length ? `<div><span class="small dim">Anchored on</span>
+            <div class="row tight" style="margin-top:4px">${anchors.map(chip).join('')}</div></div>` : ''}
+          ${others.length ? `<div><span class="small dim">Reached by traversal</span>
+            <div class="row tight" style="margin-top:4px">${others.map(chip).join('')}</div></div>` : ''}
+        </div>`;
+    }
+
+    /**
+     * Where the time went, per leg.
+     *
+     * Shown because a copilot that takes two seconds should be able to say why.
+     * The bars are proportions of the measured total, not a fixed scale.
+     */
+    function renderTrace(legs, totalMs) {
+      if (!legs.length) return;
+      show('[data-trace-card]');
+      $('[data-trace-total]').textContent = `${totalMs} ms total`;
+      const slowest = Math.max(...legs.map((l) => Number(l.elapsed_ms) || 0), 1);
+      $('[data-trace]').innerHTML = `<ul class="list">${legs.map((l) => {
+        const ms = Number(l.elapsed_ms) || 0;
+        const pct = Math.max(2, Math.round((ms / slowest) * 100));
+        return `<li>
+          <div class="row" style="justify-content:space-between">
+            <span class="row tight">
+              <span class="badge ${LEG_BADGE[l.state] || 'neutral'} no-dot">${esc(l.leg_id || l.strategy)}</span>
+              ${l.sub_question ? '<span class="small dim">sub-question</span>' : ''}
+            </span>
+            <span class="mono small tabular">${ms.toFixed(0)} ms · ${l.candidates}</span>
+          </div>
+          <div class="trace-bar"><div class="trace-fill ${l.state === 'available' ? '' : 'muted-fill'}" style="width:${pct}%"></div></div>
+          ${l.detail ? `<div class="small dim" style="margin-top:2px">${esc(l.detail)}</div>` : ''}
+        </li>`;
+      }).join('')}</ul>`;
+    }
+
     function renderCitations(citations) {
       const node = $('[data-citations]');
       show('[data-citations-card]');
@@ -292,8 +439,14 @@
         });
         return;
       }
+      // The whole row opens the source: an evidence panel whose passages cannot
+      // be opened is a list of assertions about documents, not the documents.
       node.innerHTML = `<ul class="list">${citations.map((c) => `
-        <li>
+        <li class="citation-row" role="button" tabindex="0"
+            data-cite-doc="${esc(c.doc_id)}"
+            data-cite-chunk="${esc(c.chunk_id)}"
+            data-cite-page="${esc(c.page ?? '')}"
+            aria-label="Open ${esc(c.doc_title)}${c.page ? `, page ${esc(c.page)}` : ''}">
           <div class="row" style="justify-content:space-between">
             <span class="row tight">
               <span class="badge neutral no-dot mono">${esc(c.marker)}</span>
@@ -308,6 +461,7 @@
             ${c.quote_verified ? '<span class="badge ok" style="margin-left:6px">cited in answer</span>' : ''}
           </div>
           <p class="small" style="margin:6px 0 0;color:var(--fg-1)">${esc(c.snippet)}</p>
+          <span class="small cite-open">Open source →</span>
         </li>`).join('')}</ul>`;
     }
 

@@ -84,7 +84,10 @@ class ConfidenceMode(str, Enum):
     #: Retrieval succeeded and evidence is returned, but no generation provider
     #: is configured, so no prose answer is synthesised. This is a truthful
     #: configuration state, not a quality failure.
-    ABSTAIN_NO_GENERATOR = "ABSTAIN_NO_GENERATOR"
+    #: No answer text could be produced at all: extraction found no sentence that
+    #: addresses the question, and no LLM is configured to attempt a synthesis.
+    #: Distinct from ABSTAIN_AND_ROUTE, which means evidence was judged too weak.
+    ABSTAIN_NO_ANSWER = "ABSTAIN_NO_ANSWER"
 
 
 class CapabilityState(str, Enum):
@@ -293,6 +296,12 @@ class RetrievalLeg(BaseModel):
     elapsed_ms: float
     detail: str | None = None
     required_env: list[str] = Field(default_factory=list)
+    #: Distinguishes repeated runs of the same strategy: the main pass is
+    #: ``lexical``, a decomposed pass is ``lexical:sub2``. Kept separate from
+    #: ``strategy`` so the UI can still group by strategy without parsing.
+    leg_id: str | None = None
+    #: The sub-question this leg retrieved for, when it is not the main pass.
+    sub_question: str | None = None
 
 
 class ConfidenceReport(BaseModel):
@@ -308,19 +317,62 @@ class SuggestedAction(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
+class AnswerClaim(BaseModel):
+    """One factual claim in the answer, bound to the evidence that supports it.
+
+    The copilot's core promise is that a claim and its evidence travel together.
+    Splitting the answer into claims at the API boundary -- rather than leaving a
+    paragraph with markers embedded in it -- is what lets the UI highlight the
+    exact sentence in the exact source, and what makes "unsupported claim" a
+    measurable quantity instead of an assurance.
+    """
+
+    text: str
+    marker: str
+    chunk_id: str
+    doc_id: str
+    doc_title: str
+    page: int | None = None
+    char_start: int | None = None
+    char_end: int | None = None
+    verbatim: bool = False
+    score: float | None = None
+
+
+class GraphEntityRef(BaseModel):
+    """A graph node that took part in answering, and how it was reached."""
+
+    node_id: str
+    label: str
+    display: str
+    role: str  # anchor | neighbour
+    hops: int = 0
+    data_class: DataClass | None = None
+
+
 class QueryResponse(BaseModel):
     query_id: str
     question: str
     intent: QueryIntent
     intent_confidence: float
     intent_method: str
+    sub_questions: list[str] = Field(default_factory=list)
     resolved_entities: list[dict[str, Any]] = Field(default_factory=list)
     answer: str | None = None
     answer_data_class: DataClass | None = None
+    #: ``extractive`` (verbatim spans selected from the corpus) or ``abstractive``
+    #: (LLM-written prose). Displayed, because the two carry different risks and
+    #: the reader is entitled to know which one they are reading.
+    answer_method: str | None = None
+    claims: list[AnswerClaim] = Field(default_factory=list)
+    abstained: bool = False
     generation: CapabilityStatus
     citations: list[Citation] = Field(default_factory=list)
     graph_facts: list[GraphFact] = Field(default_factory=list)
+    graph_entities: list[GraphEntityRef] = Field(default_factory=list)
     retrieval: list[RetrievalLeg] = Field(default_factory=list)
+    #: Which retrieval legs actually contributed a document to the final set.
+    retrieval_sources: list[str] = Field(default_factory=list)
     confidence: ConfidenceReport
     referral: dict[str, Any] | None = None
     actions: list[SuggestedAction] = Field(default_factory=list)

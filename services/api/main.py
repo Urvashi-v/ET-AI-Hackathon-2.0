@@ -13,6 +13,7 @@ fixtures by accident.
 
 from __future__ import annotations
 
+import asyncio
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -26,6 +27,7 @@ from fastapi.staticfiles import StaticFiles
 from services.api.routers import (
     assets,
     compliance,
+    documents,
     events,
     feedback,
     graph_router,
@@ -45,6 +47,7 @@ from services.common.logging import (
     configure_logging,
     get_logger,
 )
+from services.retrieval import warmup
 
 log = get_logger(__name__)
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -81,8 +84,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     else:
         app.state.migration_report = {"status": "skipped", "reason": "dependencies unavailable"}
 
+    # Local ONNX models reach steady-state speed only after a few inferences, so
+    # they are warmed here rather than on the first engineer's question. Detached
+    # deliberately: warm-up on a cold model cache includes the download, and
+    # blocking startup on that would fail the container's health check.
+    app.state.warmup = asyncio.create_task(warmup.warm_models())
+
     yield
 
+    app.state.warmup.cancel()
     await db.close_pool()
     await graph.close_driver()
     await bus.close_client()
@@ -176,6 +186,7 @@ async def validation_error_handler(request: Request, exc: RequestValidationError
 API_PREFIX = "/api/v1"
 app.include_router(health.router)
 app.include_router(ingest.router, prefix=API_PREFIX)
+app.include_router(documents.router, prefix=API_PREFIX)
 app.include_router(query.router, prefix=API_PREFIX)
 app.include_router(assets.router, prefix=API_PREFIX)
 app.include_router(graph_router.router, prefix=API_PREFIX)

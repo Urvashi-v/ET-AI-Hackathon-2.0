@@ -17,7 +17,7 @@ dropped rather than displayed -- the system never shows a citation it cannot
 open.
 
 With ``LLM_PROVIDER=none`` no prose is produced at all. The endpoint returns the
-retrieved evidence with ``mode=ABSTAIN_NO_GENERATOR``, which is a truthful
+retrieved evidence with ``mode=ABSTAIN_NO_ANSWER``, which is a truthful
 configuration state, not a quality failure.
 """
 

@@ -35,12 +35,42 @@ SET d.title          = $title,
     d.source_system  = $source_system,
     d.content_hash   = $content_hash,
     d.revision       = $revision,
+    d.doc_number     = $doc_number,
     d.issued_on      = CASE WHEN $issued_on IS NULL THEN NULL ELSE date($issued_on) END,
+    d.valid_from     = CASE WHEN $valid_from IS NULL THEN NULL ELSE date($valid_from) END,
+    d.valid_to       = CASE WHEN $valid_to IS NULL THEN NULL ELSE date($valid_to) END,
     d.page_count     = $page_count,
     d.is_current     = $is_current,
     d.licence_note   = $licence_note,
     d.updated_at     = datetime()
 RETURN d.doc_id AS doc_id
+"""
+
+#: Supersession, written as an explicit edge rather than inferred at read time.
+#:
+#: The chain is rebuilt from scratch on every reconciliation -- old SUPERSEDES
+#: edges within the series are deleted first -- because a revision can arrive out
+#: of order and leave a stale edge that no incremental update would notice. The
+#: direction is newer-SUPERSEDES-older, so "what replaced this?" is a single hop
+#: backwards and "is this the latest?" is the absence of an incoming edge.
+_LINK_REVISIONS = """
+UNWIND $pairs AS pair
+MATCH (older:Document {doc_id: pair.older})
+MATCH (newer:Document {doc_id: pair.newer})
+MERGE (newer)-[r:SUPERSEDES]->(older)
+SET r.basis      = $basis,
+    r.data_class = 'model_derived',
+    r.asserted_at = datetime()
+RETURN count(r) AS links
+"""
+
+#: Removes supersession edges inside one series before rebuilding it, so a
+#: correction (a mis-ordered revision, a document deleted) cannot leave a
+#: contradictory edge behind.
+_CLEAR_REVISIONS = """
+MATCH (a:Document {doc_number: $doc_number})-[r:SUPERSEDES]->(b:Document {doc_number: $doc_number})
+DELETE r
+RETURN count(r) AS removed
 """
 
 _UPSERT_CHUNK = """
@@ -301,11 +331,54 @@ async def upsert_document(document: dict[str, Any]) -> None:
         source_system=document["source_system"],
         content_hash=document["content_hash"],
         revision=document.get("revision"),
+        doc_number=document.get("doc_number"),
         issued_on=document.get("issued_on"),
+        valid_from=document.get("valid_from"),
+        valid_to=document.get("valid_to"),
         page_count=document.get("page_count"),
         is_current=document.get("is_current", True),
         licence_note=document.get("licence_note"),
     )
+
+
+async def link_revision_chain(report: dict[str, Any]) -> int:
+    """Mirror a reconciled revision series into the graph.
+
+    Takes the report from ``revisions.reconcile`` rather than re-querying, so the
+    two stores cannot disagree about the ordering: whatever Postgres settled on
+    is exactly what the graph is told.
+
+    A conflicted series writes no edges at all. Asserting supersession the
+    relational layer explicitly refused to assert would put a claim in the graph
+    that nothing supports -- and graph facts are citable, so it would surface to
+    an engineer as established.
+    """
+    doc_number = report.get("doc_number")
+    if not doc_number:
+        return 0
+
+    await graph.write(_CLEAR_REVISIONS, doc_number=doc_number)
+    if report.get("status") != "ok":
+        return 0
+
+    chain = report.get("chain") or []
+    if len(chain) < 2:
+        return 0
+
+    # Every document at a level supersedes every document at the level below it.
+    # SOP-4412 Rev 4 replaces both the Markdown and the scanned Rev 3, so both
+    # edges are written -- a single edge to one representative would leave the
+    # other looking current to any traversal that starts from it.
+    pairs = [
+        {"older": older["doc_id"], "newer": newer["doc_id"]}
+        for lower, upper in zip(chain, chain[1:], strict=False)
+        for older in lower["documents"]
+        for newer in upper["documents"]
+    ]
+    rows = await graph.write(_LINK_REVISIONS, pairs=pairs, basis=report.get("basis", "unknown"))
+    links = int(rows[0]["links"]) if rows else 0
+    log.info("graph.revision_chain_linked", doc_number=doc_number, links=links)
+    return links
 
 
 async def upsert_chunks(doc_id: str, chunks: list[dict[str, Any]], data_class: str) -> int:

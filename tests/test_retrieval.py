@@ -173,7 +173,7 @@ class TestConfidenceAndAbstention:
             "graph_facts": 12,
             "total_claims": 4,
             "verified_claims": 4,
-            "generator_available": True,
+            "answerer_available": True,
         }
         base.update(overrides)
         return ConfidenceInputs(**base)
@@ -206,10 +206,23 @@ class TestConfidenceAndAbstention:
             < confidence_score(self._inputs()).score
         )
 
-    def test_no_generator_is_reported_as_a_configuration_state(self):
-        report = confidence_score(self._inputs(generator_available=False))
-        assert report.mode is ConfidenceMode.ABSTAIN_NO_GENERATOR
-        assert "no generation provider" in report.explanation.lower()
+    def test_no_composable_answer_is_distinguished_from_weak_evidence(self):
+        """"Nothing in the evidence answers this" is not "the evidence is weak".
+
+        The distinction used to be about a missing LLM. It no longer is: the
+        extractive answerer needs no credential, so reaching this mode means
+        retrieval returned passages and none of them contained a sentence that
+        addressed the question. That is a different problem from low-scoring
+        evidence and gets a different explanation, because the operator's next
+        move differs -- rephrase, versus go and find the document.
+        """
+        report = confidence_score(self._inputs(answerer_available=False))
+        assert report.mode is ConfidenceMode.ABSTAIN_NO_ANSWER
+        # Strong signals, yet still no answer: it is the absence of an answerable
+        # sentence that decides this mode, not the confidence score.
+        assert report.score > 0.5
+        assert "no sentence" in report.explanation.lower()
+        assert "no answer was composed" in report.explanation.lower()
 
     def test_weak_evidence_abstains(self):
         report = confidence_score(

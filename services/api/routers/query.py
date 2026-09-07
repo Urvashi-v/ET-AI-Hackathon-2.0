@@ -70,6 +70,7 @@ async def query_stream(request: QueryRequest) -> StreamingResponse:
                 "confidence": response.intent_confidence,
                 "method": response.intent_method,
                 "entities": response.resolved_entities,
+                "sub_questions": response.sub_questions,
             },
         )
         for leg in response.retrieval:
@@ -78,8 +79,29 @@ async def query_stream(request: QueryRequest) -> StreamingResponse:
             yield _sse("graph_fact", fact.model_dump(mode="json"))
         for citation in response.citations:
             yield _sse("citation", citation.model_dump(mode="json"))
+        if response.graph_entities:
+            yield _sse(
+                "graph_entities",
+                {"entities": [e.model_dump(mode="json") for e in response.graph_entities]},
+            )
         if response.answer:
-            yield _sse("answer", {"text": response.answer})
+            yield _sse(
+                "answer",
+                {
+                    "text": response.answer,
+                    # Extractive answers are verbatim source text; abstractive
+                    # ones are written by a model. The reader is entitled to know
+                    # which, because the two carry different risks.
+                    "method": response.answer_method,
+                    "data_class": (
+                        response.answer_data_class.value if response.answer_data_class else None
+                    ),
+                    "claims": [c.model_dump(mode="json") for c in response.claims],
+                    "sources": response.retrieval_sources,
+                },
+            )
+        if response.abstained:
+            yield _sse("abstained", {"mode": response.confidence.mode.value})
         yield _sse("generation", response.generation.model_dump(mode="json"))
         yield _sse("confidence", response.confidence.model_dump(mode="json"))
         if response.referral:

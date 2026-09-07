@@ -107,7 +107,7 @@ classifier to its own benchmark is how a benchmark stops meaning anything.
 Embeddings, generation, reranking and OCR are all capability-gated. With none
 configured the system still performs real query understanding, real BM25, real
 graph traversal, real fusion and real citation binding, and returns the evidence
-with `ABSTAIN_NO_GENERATOR`.
+with `ABSTAIN_NO_ANSWER`.
 
 A random-vector fallback would produce plausible-looking neighbours and silently
 poison every retrieval metric. That failure is invisible, which is exactly why

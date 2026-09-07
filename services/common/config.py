@@ -65,7 +65,7 @@ class Settings(BaseSettings):
     # --- providers (all default to "not configured") -------------------------
     embedding_provider: EmbeddingProvider = "none"
     embedding_model: str = "text-embedding-3-small"
-    embedding_dim: int = 1536
+    embedding_dim: int = 384
     embedding_local_model: str = "BAAI/bge-small-en-v1.5"
 
     llm_provider: LLMProvider = "none"
@@ -74,7 +74,15 @@ class Settings(BaseSettings):
     llm_max_tokens: int = 1500
 
     reranker_provider: RerankerProvider = "none"
-    reranker_local_model: str = "BAAI/bge-reranker-base"
+    reranker_local_model: str = "Xenova/ms-marco-MiniLM-L-6-v2"
+    #: Intra-op threads for the local ONNX models. Left unset, ONNX Runtime opens
+    #: one per visible CPU, which oversubscribes a container that does not
+    #: actually own those cores -- the threads then spend their time contending
+    #: rather than computing, and inference time swings by several multiples run
+    #: to run. A small fixed number is both faster and far more predictable, and
+    #: predictability is what makes the latency figures in the evaluation mean
+    #: anything. Raise it on a dedicated inference host.
+    onnx_threads: int = Field(default=4, ge=1, le=64)
 
     ocr_provider: OCRProvider = "none"
 
@@ -109,6 +117,12 @@ class Settings(BaseSettings):
     retrieval_top_k_graph: int = 50
     retrieval_rrf_k: int = 60
     retrieval_final_k: int = 8
+    #: How many fused candidates the cross-encoder scores. Reranking is quadratic
+    #: in nothing but linear in candidates, and each one is a full forward pass,
+    #: so this is the main latency dial: ~25 keeps a CPU rerank inside a second
+    #: while still giving the reranker enough room to promote a passage that RRF
+    #: buried. Raising it improves recall@k and costs latency, linearly.
+    rerank_candidates: int = 25
     confidence_answer_threshold: float = 0.75
     confidence_caveat_threshold: float = 0.50
 
@@ -139,6 +153,19 @@ class Settings(BaseSettings):
     @property
     def max_upload_bytes(self) -> int:
         return self.ingest_max_file_mb * 1024 * 1024
+
+    @property
+    def active_embedding_model(self) -> str:
+        """The model name that vectors are tagged with, and filtered by.
+
+        One name for two settings: ``EMBEDDING_MODEL`` names the hosted model,
+        ``EMBEDDING_LOCAL_MODEL`` the local one. Writing with one and querying
+        with the other returns an empty dense leg with no error at all -- the
+        worst kind of failure, because retrieval simply gets quietly worse.
+        """
+        if self.embedding_provider == "local":
+            return self.embedding_local_model
+        return self.embedding_model
 
     def provider_status(self) -> dict[str, dict[str, object]]:
         """Truthful provider report.

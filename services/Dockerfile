@@ -29,9 +29,14 @@ COPY eval /app/eval
 
 # Run as a non-root user. `data/` is bind-mounted from the host, so the blob root
 # is created and chowned here rather than relying on the mount's ownership.
+# /models is the ONNX cache for the embedding and reranker models, backed by a
+# named volume. It is created and chowned here rather than left to the mount:
+# Docker seeds an empty named volume from the image directory, ownership
+# included, so without this the volume lands root-owned and the unprivileged
+# process cannot write the downloaded model.
 RUN useradd --create-home --uid 10001 brain \
- && mkdir -p /app/data/blobs \
- && chown -R brain:brain /app
+ && mkdir -p /app/data/blobs /models \
+ && chown -R brain:brain /app /models
 USER brain
 
 EXPOSE 8000
