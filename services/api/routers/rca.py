@@ -28,7 +28,9 @@ from fastapi import APIRouter
 
 from services.common import db, graph
 from services.common.logging import get_logger
+from services.agents import rca as rca_agent
 from services.common.schemas import (
+    CandidateCauseOut,
     CapabilityState,
     CapabilityStatus,
     DataClass,
@@ -115,55 +117,180 @@ async def run_rca(request: RCARequest) -> RCAResponse:
         "management_of_change_records": len(mocs),
     }
 
+    # --- causal analysis over recorded evidence -----------------------------
+    # Deterministic and credential-free. Candidate causes are aggregated from
+    # cause statements the plant already wrote down -- incident root causes,
+    # work-order as-found notes -- grouped by mechanism and ranked by how much
+    # independent evidence supports each. Nothing is generated: an LLM would
+    # produce a fluent RCA for any pump on earth, and that is precisely the
+    # failure mode this replaces.
+    analysis = rca_agent.analyse(
+        asset_tag=asset["canonical_tag"],
+        incidents=incidents,
+        work_orders=work_orders,
+        sibling_events=sibling_history,
+        inspections=inspections,
+    )
+
     generation = generation_capability()
-    if generation.state is not CapabilityState.AVAILABLE:
+    if analysis.abstained:
         status = CapabilityStatus(
             capability="rca_causal_analysis",
-            state=CapabilityState.NOT_CONFIGURED,
+            state=CapabilityState.AVAILABLE,
             detail=(
-                "Evidence gathering, reliability metrics and similar-event ranking completed "
-                "and are returned below -- all computed from stored records. Building the "
-                "causal tree requires a generation provider, so no causal analysis was "
-                "produced. No template tree is substituted."
+                "Evidence gathered and returned below, but no causal ranking was produced. "
+                + (analysis.abstain_reason or "")
             ),
-            required_env=generation.required_env,
         )
-        return RCAResponse(
-            asset_tag=asset["canonical_tag"],
-            asset_found=True,
-            event=request.failure_description,
-            status=status,
-            evidence_gathered=evidence_gathered,
-            reliability_metrics=metrics,
-            causal_tree=None,
-            similar_events=similar,
-            duplicate_of_open_capa=open_capas[0]["capa_id"] if open_capas else None,
-            discriminating_evidence_needed=_missing_evidence(
-                work_orders, incidents, inspections, mocs
+    else:
+        detail = (
+            f"{len(analysis.candidates)} candidate cause(s) ranked from "
+            f"{analysis.evidence_count} recorded statement(s) across incidents, work orders "
+            "and identical equipment. Aggregated from stored records, not generated."
+        )
+        if generation.state is not CapabilityState.AVAILABLE:
+            detail += (
+                " A narrative causal tree would additionally require a generation provider; "
+                "the ranking below does not."
+            )
+        status = CapabilityStatus(
+            capability="rca_causal_analysis",
+            state=CapabilityState.AVAILABLE,
+            detail=detail,
+            required_env=(
+                [] if generation.state is CapabilityState.AVAILABLE else generation.required_env
             ),
         )
 
-    # A generation provider is configured but the constrained causal-tree agent
-    # is not built yet. Say that, rather than emitting a free-form paragraph and
-    # calling it a causal tree.
     return RCAResponse(
         asset_tag=asset["canonical_tag"],
         asset_found=True,
         event=request.failure_description,
-        status=CapabilityStatus(
-            capability="rca_causal_analysis",
-            state=CapabilityState.NOT_IMPLEMENTED,
-            detail=(
-                "A generation provider is configured, but the schema-constrained causal-tree "
-                "agent is not implemented in this build. Evidence and metrics below are real."
-            ),
-        ),
+        observed_symptom=rca_agent.summarise_symptom(request.failure_description),
+        status=status,
         evidence_gathered=evidence_gathered,
         reliability_metrics=metrics,
+        candidate_causes=[CandidateCauseOut(**c.to_dict()) for c in analysis.candidates],
+        causal_analysis_abstained=analysis.abstained,
+        causal_analysis_reason=analysis.abstain_reason,
+        historical_occurrences=_timeline(work_orders, incidents, sibling_history),
+        related_work_orders=[_wo_summary(w) for w in work_orders],
+        related_incidents=[_incident_summary(i) for i in incidents],
+        sibling_history=sibling_history,
+        open_corrective_actions=open_capas,
+        management_of_change=mocs,
         similar_events=similar,
         duplicate_of_open_capa=open_capas[0]["capa_id"] if open_capas else None,
+        overall_confidence=_overall_confidence(analysis, evidence_gathered),
         discriminating_evidence_needed=_missing_evidence(work_orders, incidents, inspections, mocs),
     )
+
+
+def _timeline(
+    work_orders: list[dict[str, Any]],
+    incidents: list[dict[str, Any]],
+    sibling_history: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Every recorded event on one axis, oldest first.
+
+    Siblings are included and flagged rather than kept separate: the point of the
+    timeline is to make a pattern across a duty/standby pair visible, and two
+    separate timelines hide exactly that.
+    """
+    events: list[dict[str, Any]] = []
+    for wo in work_orders:
+        events.append(
+            {
+                "kind": "work_order",
+                "ref_id": wo["wo_id"],
+                "date": _iso(wo.get("opened_on")),
+                "label": wo.get("description") or wo["wo_id"],
+                "detail": wo.get("as_found"),
+                "wo_type": wo.get("wo_type"),
+                "downtime_hours": float(wo["downtime_hours"]) if wo.get("downtime_hours") else None,
+                "is_sibling": False,
+                "data_class": wo.get("data_class"),
+            }
+        )
+    for inc in incidents:
+        events.append(
+            {
+                "kind": "incident",
+                "ref_id": inc["incident_id"],
+                "date": _iso(inc.get("occurred_on")),
+                "label": inc.get("title") or inc["incident_id"],
+                "detail": inc.get("root_cause") or inc.get("immediate_cause"),
+                "severity": inc.get("severity"),
+                "status": inc.get("investigation_status"),
+                "is_sibling": False,
+                "data_class": inc.get("data_class"),
+            }
+        )
+    for event in sibling_history:
+        events.append(
+            {
+                "kind": str(event.get("kind") or "work_order"),
+                "ref_id": event.get("id") or event.get("wo_id"),
+                "date": _iso(event.get("date") or event.get("opened_on")),
+                "label": event.get("summary") or event.get("id"),
+                "detail": event.get("as_found") or event.get("root_cause"),
+                "asset_tag": event.get("asset_tag"),
+                "is_sibling": True,
+                "data_class": event.get("data_class"),
+            }
+        )
+    # Undated events sort last rather than being dropped: an event with no date
+    # is still an event, and hiding it would understate the history.
+    return sorted(events, key=lambda e: (e["date"] is None, e["date"] or ""))
+
+
+def _wo_summary(wo: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "wo_id": wo["wo_id"],
+        "wo_type": wo.get("wo_type"),
+        "description": wo.get("description"),
+        "as_found": wo.get("as_found"),
+        "opened_on": _iso(wo.get("opened_on")),
+        "closed_on": _iso(wo.get("closed_on")),
+        "downtime_hours": float(wo["downtime_hours"]) if wo.get("downtime_hours") else None,
+        "coded_failure_mode": wo.get("coded_failure_mode"),
+        "extracted_failure_mode": wo.get("extracted_failure_mode"),
+        "data_class": wo.get("data_class"),
+    }
+
+
+def _incident_summary(inc: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "incident_id": inc["incident_id"],
+        "title": inc.get("title"),
+        "occurred_on": _iso(inc.get("occurred_on")),
+        "severity": inc.get("severity"),
+        "immediate_cause": inc.get("immediate_cause"),
+        "root_cause": inc.get("root_cause"),
+        "investigation_status": inc.get("investigation_status"),
+        "data_class": inc.get("data_class"),
+    }
+
+
+def _overall_confidence(analysis: Any, evidence: dict[str, int]) -> float | None:
+    """How much of the recorded evidence points at the leading candidate.
+
+    Deliberately not the raw ranking score, which mixes weights and decay into a
+    number with no natural scale. This answers a question the data can actually
+    answer -- what share of cause statements name this mechanism -- and discounts
+    it when the support is thin in ways that matter: only siblings, or only one
+    document. An abstained analysis returns None rather than a low number,
+    because there is no candidate to be confident about.
+    """
+    if analysis.abstained or not analysis.candidates:
+        return None
+    leading = analysis.candidates[0]
+    share = leading.occurrences / max(analysis.evidence_count, 1)
+    if leading.on_this_asset == 0:
+        share *= 0.7
+    if len({e.ref_id for e in leading.evidence}) < 2:
+        share *= 0.6
+    return round(min(share, 0.95), 4)
 
 
 # ---------------------------------------------------------------------------
@@ -188,31 +315,80 @@ async def _sibling_history(sibling_tags: list[str]) -> list[dict[str, Any]]:
     """
     if not sibling_tags:
         return []
-    return await db.fetch_all(
+
+    # Both event types, unioned. Work orders alone miss the thing that matters
+    # most: the sibling's *investigated* failure, which is where a root cause and
+    # an open corrective action actually live. In this corpus the duty pump's
+    # 2022 investigation concluded dry running and raised two CAPAs that are
+    # still open -- evidence about the standby pump's identical failure that a
+    # work-order-only query cannot see.
+    rows = await db.fetch_all(
         """
-        SELECT w.wo_id, w.description, w.as_found, w.coded_failure_mode, w.opened_on,
-               w.downtime_hours, w.source_system, w.data_class::text AS data_class,
-               a.canonical_tag
+        SELECT w.wo_id                     AS id,
+               'work_order'                AS kind,
+               w.description               AS summary,
+               w.as_found                  AS as_found,
+               NULL::text                  AS root_cause,
+               w.coded_failure_mode        AS coded_failure_mode,
+               w.opened_on                 AS date,
+               w.downtime_hours            AS downtime_hours,
+               NULL::text                  AS status,
+               w.source_system, w.data_class::text AS data_class,
+               a.canonical_tag             AS asset_tag
           FROM work_orders w
           JOIN assets a ON a.asset_id = w.asset_id
-         WHERE a.canonical_tag = ANY(%s)
-         ORDER BY w.opened_on DESC NULLS LAST
+         WHERE a.canonical_tag = ANY(%(tags)s)
+        UNION ALL
+        SELECT i.incident_id               AS id,
+               'incident'                  AS kind,
+               i.title                     AS summary,
+               i.immediate_cause           AS as_found,
+               i.root_cause                AS root_cause,
+               NULL::text                  AS coded_failure_mode,
+               i.occurred_on               AS date,
+               NULL::numeric               AS downtime_hours,
+               i.investigation_status      AS status,
+               i.source_system, i.data_class::text AS data_class,
+               a.canonical_tag             AS asset_tag
+          FROM incidents i
+          JOIN assets a ON a.asset_id = i.asset_id
+         WHERE a.canonical_tag = ANY(%(tags)s)
+         ORDER BY date DESC NULLS LAST
          LIMIT 100
         """,
-        (sibling_tags,),
+        {"tags": sibling_tags},
     )
+    return [
+        {k: (v.isoformat() if hasattr(v, "isoformat") else v) for k, v in dict(r).items()}
+        for r in rows
+    ]
 
 
 async def _open_capas(canonical_tag: str) -> list[dict[str, Any]]:
     """An open CAPA that already addresses this failure is the single most
     valuable thing to surface: the plant already decided how to fix it."""
+    # Siblings are included, and flagged. An open action raised against the duty
+    # pump after its seal ran dry is the most useful thing this endpoint can put
+    # in front of an engineer investigating the standby pump doing the same
+    # thing -- and restricting the query to one tag hides it. The corpus this was
+    # built against contains exactly that: CAPA-88 and CAPA-89, raised in 2022
+    # against P-101A, still open, and directly about the mechanism that later
+    # took out P-101B.
     rows = await graph.read(
         """
-        MATCH (e:Equipment {canonical_tag: $tag})<-[:INVOLVED]-(i:Incident)-[:GENERATED]->(c:CAPA)
+        MATCH (e:Equipment {canonical_tag: $tag})
+        OPTIONAL MATCH (e)-[:SIBLING_OF]-(sib:Equipment)
+        WITH collect(DISTINCT e) + collect(DISTINCT sib) AS pumps, e
+        UNWIND pumps AS pump
+        MATCH (pump)<-[:INVOLVED]-(i:Incident)-[:GENERATED]->(c:CAPA)
         WHERE coalesce(c.status, 'OPEN') <> 'CLOSED'
-        RETURN c.capa_id AS capa_id, c.action AS action, c.owner AS owner,
-               c.due_date AS due_date, c.status AS status, i.incident_id AS from_incident
-        ORDER BY c.due_date
+        RETURN DISTINCT
+               c.capa_id AS capa_id, c.action AS action, c.owner AS owner,
+               c.due_date AS due_date, c.status AS status,
+               i.incident_id AS from_incident,
+               pump.canonical_tag AS raised_against,
+               pump.canonical_tag <> e.canonical_tag AS is_sibling
+        ORDER BY is_sibling, due_date
         """,
         tag=canonical_tag,
     )

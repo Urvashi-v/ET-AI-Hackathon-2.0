@@ -29,6 +29,9 @@ from typing import Any
 
 from fastapi import APIRouter
 
+from fastapi import HTTPException
+
+from services.agents import compliance as compliance_agent
 from services.common import db
 from services.common.logging import get_logger
 from services.common.schemas import (
@@ -274,3 +277,48 @@ async def evidence_package(request: ComplianceRequest) -> dict[str, Any]:
         "scope": request.scope.model_dump(),
         "package_url": None,
     }
+
+
+# ---------------------------------------------------------------------------
+# Evidence-backed evaluation (Day 4)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/evaluate", summary="Evaluate requirements against stored evidence")
+async def evaluate_requirements(
+    asset_tag: str | None = None,
+    standard: str | None = None,
+) -> dict[str, Any]:
+    """Per-requirement findings, each with the evidence behind the verdict.
+
+    Distinct from ``POST /compliance``, which reports coverage gaps over the
+    requirement set. This answers the narrower and more useful question: for this
+    asset, which obligations can be shown to be met, which are demonstrably not,
+    and which cannot be decided from what the system holds.
+    """
+    result = await compliance_agent.evaluate(asset_tag=asset_tag, standard=standard)
+    return {
+        "scope": {"asset_tag": asset_tag, "standard": standard},
+        "status": {
+            "capability": "compliance_evaluation",
+            "state": "available",
+            "detail": (
+                "Requirements are evaluated per testability mode. Only evidence-document and "
+                "graph-state obligations can be decided from stored records; procedure-text "
+                "obligations return a candidate control for human verification, and "
+                "permit-record obligations require a permit system that is not connected. "
+                "coverage_pct_of_decidable is computed over decidable requirements only."
+            ),
+        },
+        **result,
+    }
+
+
+@router.get("/requirements/{req_id}", summary="One requirement, with its provenance")
+async def get_requirement(req_id: str) -> dict[str, Any]:
+    row = await db.fetch_one(
+        "SELECT * FROM requirements WHERE upper(req_id) = upper(%s)", (req_id,)
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail=f"No requirement {req_id}")
+    return {"requirement": row}

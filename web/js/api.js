@@ -99,6 +99,15 @@ export const api = {
   edgeEvidence: (assetId, edgeId) =>
     request(`/api/v1/graph/${encodeURIComponent(assetId)}/evidence/${encodeURIComponent(edgeId)}`),
 
+  // --- intelligence agents ---
+  lessons: (payload) => request('/api/v1/lessons', { method: 'POST', body: payload }),
+  incidents: (params = {}) => request(`/api/v1/lessons/incidents?${new URLSearchParams(params)}`),
+  incident: (id) => request(`/api/v1/lessons/incidents/${encodeURIComponent(id)}`),
+  complianceEvaluate: (params = {}) =>
+    request(`/api/v1/compliance/evaluate?${new URLSearchParams(params)}`),
+  evaluateEvent: (payload) =>
+    request('/api/v1/notifications/evaluate', { method: 'POST', body: payload }),
+
   // --- agents ---
   rca: (payload) => request('/api/v1/rca', { method: 'POST', body: payload }),
   compliance: (payload) => request('/api/v1/compliance', { method: 'POST', body: payload }),

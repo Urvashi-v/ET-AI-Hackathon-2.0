@@ -36,7 +36,8 @@ from services.common.ids import document_id as make_document_id
 from services.common.ids import mention_id as make_mention_id
 from services.common.logging import get_logger
 from services.common.schemas import CapabilityState, DataClass, DocumentType
-from services.ingest import graph_writer, revisions, storage
+from services.agents import proactive
+from services.ingest import graph_writer, record_writer, records, revisions, storage
 from services.ingest.chunk import Chunk, chunk_document
 from services.ingest.classify import classify
 from services.ingest.embeddings import get_embedding_provider
@@ -602,6 +603,30 @@ async def ingest_file(
         )
     )
 
+    # --- structured records from prose --------------------------------------
+    # Runs after the graph upsert because it links incidents to Equipment nodes
+    # that stage creates. Turns an incident *document* into an incident *record*:
+    # without it the corpus holds two investigated seal failures that RCA cannot
+    # see, because nothing outside text search knows they exist.
+    record_outcome = await _extract_structured_records(
+        doc_id=doc_id,
+        doc_type=classification.doc_type,
+        doc_number=doc_number.value if doc_number else None,
+        title=title,
+        data_class=data_class,
+    )
+    if record_outcome is not None:
+        result.stages.append(record_outcome)
+
+    # --- proactive matching -------------------------------------------------
+    # The graph just changed. This is the trigger for the proactive path: match
+    # what arrived against history, open actions, obligations and superseded
+    # procedures, and raise notifications for what it finds. Real events only --
+    # a document that produced no asset-linked record produces no notification.
+    proactive_outcome = await _run_proactive_matching(doc_id=doc_id, title=title)
+    if proactive_outcome is not None:
+        result.stages.append(proactive_outcome)
+
     # Per-document counters the ingestion dashboard reports. Written here rather
     # than recomputed by the API so the numbers on screen are the numbers this
     # run actually produced, including how long it took.
@@ -1151,6 +1176,167 @@ def _strategy_name(doc_type: DocumentType) -> str:
         DocumentType.INCIDENT_REPORT: "semantic sections",
         DocumentType.PID: "no prose chunking (topology, not text)",
     }.get(doc_type, "heading-aware prose")
+
+
+async def _extract_structured_records(
+    *,
+    doc_id: str,
+    doc_type: DocumentType,
+    doc_number: str | None,
+    title: str,
+    data_class: DataClass,
+) -> StageOutcome | None:
+    """Turn an incident or MOC document into graph nodes, deterministically.
+
+    Chunks are read back from Postgres rather than passed in, so extraction sees
+    exactly the text that was stored -- if chunking changed the section paths, the
+    extractor finds out here rather than producing records that disagree with the
+    passages a citation would open.
+
+    Returns None for document types this does not apply to, so the ingestion
+    dashboard shows the stage only where it means something.
+    """
+    if not records.is_extractable(doc_type):
+        return None
+
+    chunk_rows = await db.fetch_all(
+        "SELECT chunk_id, text, section_path, page_from FROM document_chunks "
+        "WHERE doc_id = %s ORDER BY ordinal",
+        (doc_id,),
+    )
+    if not chunk_rows:
+        return None
+
+    try:
+        if doc_type is DocumentType.INCIDENT_REPORT:
+            incident = records.extract_incident(
+                doc_id=doc_id, title=title, doc_number=doc_number, chunks=chunk_rows
+            )
+            if incident is None:
+                return StageOutcome(
+                    "structured_records",
+                    CapabilityState.AVAILABLE,
+                    items=0,
+                    detail=(
+                        "No incident record extracted: the document carries neither a cause "
+                        "statement nor a corrective action under a recognised heading. "
+                        "Reported rather than guessed."
+                    ),
+                )
+            written = await record_writer.write_incident(incident, data_class=data_class)
+            missing = (
+                f"; fields not stated: {', '.join(incident.fields_missing)}"
+                if incident.fields_missing
+                else ""
+            )
+            return StageOutcome(
+                "structured_records",
+                CapabilityState.AVAILABLE,
+                items=1,
+                detail=(
+                    f"{incident.incident_id}: {written['asset_links']} asset link(s), "
+                    f"{written['corrective_actions']} corrective action(s), "
+                    f"{written['related_incidents']} related incident(s){missing}"
+                ),
+            )
+
+        change = records.extract_change(
+            doc_id=doc_id, title=title, doc_number=doc_number, chunks=chunk_rows
+        )
+        if change is None:
+            return StageOutcome(
+                "structured_records",
+                CapabilityState.AVAILABLE,
+                items=0,
+                detail="No change record extracted: no MOC number found.",
+            )
+        written = await record_writer.write_change(change, data_class=data_class)
+        return StageOutcome(
+            "structured_records",
+            CapabilityState.AVAILABLE,
+            items=1,
+            detail=f"{change.moc_id}: {written['asset_links']} asset link(s)",
+        )
+    except Exception as exc:
+        # A record that will not extract must not fail the ingestion of a
+        # document that parsed, chunked and indexed correctly.
+        log.error("records.extraction_failed", doc_id=doc_id, error=str(exc))
+        return StageOutcome(
+            "structured_records",
+            CapabilityState.ERROR,
+            items=0,
+            detail=f"{type(exc).__name__}: {str(exc)[:200]}",
+        )
+
+
+async def _run_proactive_matching(*, doc_id: str, title: str) -> StageOutcome | None:
+    """Fire the proactive matchers for whatever this document just asserted.
+
+    Scoped to the assets this document actually touched, rather than the whole
+    estate: ingesting one incident report should not re-evaluate every pump in
+    the plant, and a notification storm on bulk ingest is how the feature gets
+    turned off.
+
+    Failures here never fail the ingest. The document parsed, chunked, indexed
+    and reached the graph; not managing to raise a notification about it is a
+    lesser problem, and the endpoint can be re-run.
+    """
+    rows = await db.fetch_all(
+        """
+        SELECT a.canonical_tag AS asset_tag, i.incident_id AS ref_id,
+               coalesce(i.root_cause, i.immediate_cause, i.title) AS description,
+               'incident.recorded' AS event_type
+          FROM incidents i
+          JOIN assets a ON a.asset_id = i.asset_id
+         WHERE i.doc_id = %(doc_id)s
+        UNION ALL
+        SELECT a.canonical_tag, w.wo_id,
+               coalesce(w.as_found, w.description, w.wo_id),
+               'work_order.recorded'
+          FROM work_orders w
+          JOIN assets a ON a.asset_id = w.asset_id
+         WHERE w.doc_id = %(doc_id)s
+        """,
+        {"doc_id": doc_id},
+    )
+    if not rows:
+        return None
+
+    # One evaluation per asset, using its most recent triggering record. A CMMS
+    # export carrying fifteen work orders on one pump is one event about that
+    # pump, not fifteen.
+    by_asset: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        by_asset.setdefault(row["asset_tag"], row)
+
+    raised = 0
+    errors = 0
+    for asset_tag, row in by_asset.items():
+        try:
+            candidates = await proactive.evaluate_event(
+                event_type=row["event_type"],
+                asset_tag=asset_tag,
+                description=row["description"] or "",
+                ref_id=row["ref_id"],
+                doc_id=doc_id,
+            )
+            raised += len(await proactive.raise_notifications(candidates))
+        except Exception as exc:
+            errors += 1
+            log.error("proactive.matching_failed", doc_id=doc_id, asset=asset_tag, error=str(exc))
+
+    detail = (
+        f"{len(by_asset)} asset(s) evaluated against history, open actions, obligations and "
+        f"superseded procedures; {raised} notification(s) raised"
+    )
+    if errors:
+        detail += f"; {errors} evaluation(s) failed"
+    return StageOutcome(
+        "proactive_matching",
+        CapabilityState.ERROR if errors and not raised else CapabilityState.AVAILABLE,
+        items=raised,
+        detail=detail + ".",
+    )
 
 
 def _iso(value: Any) -> str | None:

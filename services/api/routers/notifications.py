@@ -24,11 +24,12 @@ from fastapi import APIRouter, Query
 
 from services.common import db
 from services.common.errors import NotFoundError
+from services.agents import proactive
 from services.common.schemas import (
     CapabilityState,
     CapabilityStatus,
     DataClass,
-    EvidenceRef,
+    EventEvaluationRequest,
     Notification,
     NotificationListResponse,
 )
@@ -37,13 +38,14 @@ router = APIRouter(prefix="/notifications", tags=["proactive"])
 
 _ENGINE_STATUS = CapabilityStatus(
     capability="proactive_pattern_engine",
-    state=CapabilityState.NOT_IMPLEMENTED,
+    state=CapabilityState.AVAILABLE,
     detail=(
-        "The event-driven matching engine (new event -> similar historical patterns -> "
-        "push with evidence) is not implemented in this build. The event bus that will "
-        "trigger it is running: ingestion already publishes 'graph.changed' and "
-        "'document.ingested' events, which are visible on /api/v1/events/stream. "
-        "Notifications listed here are real rows only; none are generated for display."
+        "Event-driven matching runs over stored state: an event is matched against "
+        "historical incidents (semantic + mechanism + graph signals), against open "
+        "corrective actions on the asset and its siblings, against the requirement set, "
+        "and against superseded procedures still describing the asset. Notifications are "
+        "rows in Postgres raised by that pipeline and pushed on /api/v1/events/stream. "
+        "Nothing here is generated for display, and nothing is produced on a timer."
     ),
 )
 
@@ -94,7 +96,8 @@ async def list_notifications(
                 reason=r["reason"],
                 asset_tag=r["asset_tag"],
                 audience_role=r["audience_role"],
-                evidence=[EvidenceRef(**e) for e in (r["evidence"] or [])],
+                kind=(r["pattern_id"] or "").split(":")[0] or None,
+                evidence=r["evidence"] or {},
                 pattern_id=r["pattern_id"],
                 match_score=r["match_score"],
                 data_class=DataClass(r["data_class"]),
@@ -123,3 +126,50 @@ async def acknowledge(notification_id: int) -> dict[str, Any]:
             raise NotFoundError(f"No notification with id {notification_id}.")
         return {"notification_id": notification_id, "acknowledged": True, "already": True}
     return {"notification_id": notification_id, "acknowledged": True, "already": False}
+
+
+# ---------------------------------------------------------------------------
+# The event path (Day 4)
+# ---------------------------------------------------------------------------
+
+
+@router.post("/evaluate", summary="Run the proactive matchers against an event")
+async def evaluate_event(request: EventEvaluationRequest) -> dict[str, Any]:
+    """Drive the pipeline for one event and raise what it finds.
+
+    This is the same code path ingestion triggers; exposing it directly makes the
+    behaviour testable and lets an operator ask "what would you tell me about
+    this?" without waiting for the event to occur.
+
+    ``dry_run`` returns the candidates without storing them, which is how the
+    matchers are inspected without filling somebody's notification list.
+    """
+    candidates = await proactive.evaluate_event(
+        event_type=request.event_type,
+        asset_tag=request.asset_tag,
+        description=request.description,
+        ref_id=request.ref_id,
+    )
+    if request.dry_run:
+        return {
+            "dry_run": True,
+            "candidates": [c.to_dict() for c in candidates],
+            "raised": [],
+            "detail": "Candidates were evaluated but not stored.",
+        }
+
+    raised = await proactive.raise_notifications(candidates)
+    suppressed = len(candidates) - len(raised)
+    return {
+        "dry_run": False,
+        "candidates": [c.to_dict() for c in candidates],
+        "raised": raised,
+        "detail": (
+            f"{len(raised)} notification(s) raised"
+            + (
+                f"; {suppressed} suppressed as already outstanding for the same pattern."
+                if suppressed
+                else "."
+            )
+        ),
+    }

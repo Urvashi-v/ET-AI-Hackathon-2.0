@@ -61,7 +61,19 @@
 
     <div class="grid sidebar" style="margin-top:14px">
       <div class="stack">
-        <section class="card">
+                <section class="card" data-eval-card hidden>
+          <div class="card-head">
+            <h2>Requirement findings</h2>
+            <span class="small dim" data-eval-note></span>
+          </div>
+          <div class="card-body flush">
+            <div class="counters" data-eval-counters></div>
+            <div class="row tight" style="padding:0 14px 10px" data-eval-filters></div>
+            <div class="scroll-y h-520" data-findings></div>
+          </div>
+        </section>
+
+<section class="card">
           <div class="card-head">
             <h2>Gaps</h2>
             <span class="small dim" data-gap-count></span>
@@ -302,11 +314,13 @@
     $('[data-scan-form]').addEventListener('submit', (event) => {
       event.preventDefault();
       const form = new FormData(event.currentTarget);
-      scan({
-        standard: String(form.get('standard') || '').trim() || null,
-        asset_tag: String(form.get('asset_tag') || '').trim() || null,
-        years: Number(form.get('years')) || 3,
-      });
+      const standard = String(form.get('standard') || '').trim() || null;
+      const assetTag = String(form.get('asset_tag') || '').trim() || null;
+      scan({ standard, asset_tag: assetTag, years: Number(form.get('years')) || 3 });
+      // The coverage scan and the per-requirement evaluation answer different
+      // questions, so both run: one reports which requirements have any control
+      // at all, the other whether stored evidence actually satisfies them.
+      loadEvaluation(assetTag, standard);
     });
 
     $('[data-evidence-pack]').addEventListener('click', async () => {
@@ -325,6 +339,135 @@
 
     loadRequirements();
     scan({ years: 3 });
+
+    // ---------------------------------------------------------------- day 4
+
+    const show = (sel, visible = true) => { const n = $(sel); if (n) n.hidden = !visible; };
+
+    //: The four states, kept visually and semantically distinct. Conflating "we
+    //: checked and it fails" with "we could not check" is the specific
+    //: dishonesty a compliance dashboard is most tempted into, because merging
+    //: them produces a single satisfying percentage.
+    const STATE_LABEL = {
+      satisfied: ['ok', 'Satisfied'],
+      gap: ['danger', 'Gap'],
+      needs_verification: ['warn', 'Needs verification'],
+      not_evaluable: ['neutral', 'Not evaluable'],
+    };
+
+    let evaluation = null;
+    let stateFilter = 'all';
+
+    async function loadEvaluation(assetTag, standard) {
+      show('[data-eval-card]');
+      const node = $('[data-findings]');
+      renderLoading(node, 'Evaluating requirements against stored evidence');
+      try {
+        const params = {};
+        if (assetTag) params.asset_tag = assetTag;
+        if (standard) params.standard = standard;
+        evaluation = await api.complianceEvaluate(params);
+        renderEvaluation();
+      } catch (error) {
+        renderError(node, error, { title: 'Could not evaluate requirements' });
+      }
+    }
+
+    function renderEvaluation() {
+      const d = evaluation;
+      $('[data-eval-note]').textContent =
+        `${d.requirements_loaded} requirement(s) loaded · scope ${d.assets_in_scope.join(', ') || 'all assets'}`;
+
+      // The headline figure is explicitly "of decidable", and the count it is
+      // taken over is shown next to it. A percentage whose denominator is hidden
+      // is how an unexamined estate comes to look green.
+      const pct = d.coverage_pct_of_decidable;
+      $('[data-eval-counters]').innerHTML = `
+        <div class="counter"><span class="counter-value ok">${d.satisfied}</span><span class="counter-label">Satisfied</span></div>
+        <div class="counter"><span class="counter-value danger">${d.gaps}</span><span class="counter-label">Gaps</span></div>
+        <div class="counter"><span class="counter-value warn">${d.needs_verification}</span><span class="counter-label">Needs verification</span></div>
+        <div class="counter"><span class="counter-value dim">${d.not_evaluable}</span><span class="counter-label">Not evaluable</span></div>
+        <div class="counter">
+          <span class="counter-value">${pct === null ? 'n/a' : pct + '%'}</span>
+          <span class="counter-label">of ${d.decidable_count} decidable</span>
+        </div>`;
+
+      const counts = { all: d.findings.length };
+      for (const f of d.findings) counts[f.state] = (counts[f.state] || 0) + 1;
+      $('[data-eval-filters]').innerHTML = ['all', 'gap', 'needs_verification', 'satisfied', 'not_evaluable']
+        .filter((k) => k === 'all' || counts[k])
+        .map((k) => `<button type="button" class="small ${stateFilter === k ? '' : 'ghost'}" data-state="${k}">
+            ${k === 'all' ? 'All' : STATE_LABEL[k][1]} (${counts[k] || 0})
+          </button>`).join('');
+
+      const shown = d.findings.filter((f) => stateFilter === 'all' || f.state === stateFilter);
+      $('[data-findings]').innerHTML = `<ul class="list">${shown.map(renderFinding).join('')}</ul>`;
+    }
+
+    function renderFinding(f) {
+      const [tone, label] = STATE_LABEL[f.state] || ['neutral', f.state];
+      return `<li class="finding ${esc(f.state)}">
+        <div class="row" style="justify-content:space-between">
+          <span class="row tight">
+            <span class="badge ${tone}">${esc(label)}</span>
+            <strong class="small mono">${esc(f.req_id)}</strong>
+            <span class="small dim">${esc(f.source_standard)}${f.clause ? ' ' + esc(f.clause) : ''}</span>
+            ${f.asset_tag ? `<span class="badge neutral no-dot mono">${esc(f.asset_tag)}</span>` : ''}
+          </span>
+          <span class="small dim">${esc(f.testable_by.replaceAll('_', ' '))}</span>
+        </div>
+        <div class="small" style="margin-top:5px;color:var(--fg-1)">${esc(f.obligation_text)}</div>
+        <div class="small dim" style="margin-top:4px">${esc(f.reason)}</div>
+        <div class="row tight small dim" style="margin-top:5px">
+          <span title="How the requirement text was sourced">text: ${esc(f.text_status.replaceAll('_', ' '))}</span>
+          ${f.frequency_months ? `<span>· every ${f.frequency_months} months</span>` : ''}
+          ${f.due_by ? `<span>· next due ${esc(f.due_by)}</span>` : ''}
+          ${f.owner ? `<span>· owner ${esc(f.owner)}</span>` : ''}
+        </div>
+        ${f.evidence?.length ? `<details style="margin-top:6px">
+          <summary class="small">Evidence (${f.evidence.length})</summary>
+          <ul class="mention-list">${f.evidence.map(renderEvidence).join('')}</ul>
+        </details>` : ''}
+        ${f.controls?.length ? `<details style="margin-top:6px">
+          <summary class="small">Candidate controls (${f.controls.length}) — require human verification</summary>
+          <ul class="mention-list">${f.controls.map((c) => `<li>
+            <span class="mono small">${esc(c.doc_title || c.doc_id)}</span>
+            ${c.is_current === false ? '<span class="badge warn no-dot">superseded</span>' : ''}
+            <span class="small dim">match ${(c.match_score * 100).toFixed(0)}%${c.section_path ? ' · ' + esc(c.section_path) : ''}</span>
+            <div class="small" style="color:var(--fg-1)">${esc((c.snippet || '').slice(0, 200))}</div>
+          </li>`).join('')}</ul>
+        </details>` : ''}
+      </li>`;
+    }
+
+    function renderEvidence(e) {
+      if (e.kind === 'inspection_record') {
+        return `<li>
+          <span class="mono small">${esc(e.inspection_id)}</span>
+          <span class="small dim">${esc(e.method || '')} · ${esc(e.inspected_on || 'undated')}${e.cml_id ? ' · CML ' + esc(e.cml_id) : ''}${e.inspector ? ' · ' + esc(e.inspector) : ''}</span>
+          ${e.thickness_mm ? `<span class="small mono tabular"> ${e.thickness_mm} mm${e.min_required_mm ? ' (min ' + e.min_required_mm + ')' : ''}</span>` : ''}
+          ${e.finding ? `<div class="small" style="color:var(--fg-1)">${esc(e.finding)}</div>` : ''}
+        </li>`;
+      }
+      if (e.moc_id) {
+        return `<li>
+          <span class="mono small">${esc(e.moc_id)}</span>
+          <span class="small dim">approved ${esc(e.approved_on || 'undated')} · affects ${esc(e.asset_tag || '')}</span>
+          <div class="small" style="color:var(--fg-1)">${esc((e.change || '').slice(0, 180))}</div>
+          ${e.stale_documents?.length ? `<div class="small dim">Documents not revised since: ${
+            e.stale_documents.map((d) => esc(d.title || d.doc_id)).join(', ')}</div>` : ''}
+        </li>`;
+      }
+      return `<li><span class="small">${esc(JSON.stringify(e).slice(0, 200))}</span></li>`;
+    }
+
+    document.addEventListener('click', (event) => {
+      const button = event.target.closest('[data-state]');
+      if (!button || !evaluation) return;
+      stateFilter = button.dataset.state;
+      renderEvaluation();
+    });
+
   </script>
 </body>
 </html>

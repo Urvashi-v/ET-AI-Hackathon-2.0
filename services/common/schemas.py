@@ -496,11 +496,44 @@ class RCARequest(BaseModel):
     event_date: date | None = None
 
 
+class CandidateCauseOut(BaseModel):
+    """One ranked cause, with the records that support it.
+
+    ``score`` is an ordering, deliberately not presented as a probability: it
+    combines four heuristics over recorded evidence, and calling the result
+    "0.87 confident" would claim a calibration nothing here supports.
+    """
+
+    key: str
+    label: str
+    score: float
+    occurrences: int
+    on_this_asset: int
+    on_siblings: int
+    latest_occurrence: str | None = None
+    rationale: str
+    evidence: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class RCAResponse(BaseModel):
     asset_tag: str
     asset_found: bool
     event: str
     status: CapabilityStatus
+    #: The symptom as reported, normalised for display only.
+    observed_symptom: str | None = None
+    #: Causes aggregated from recorded evidence and ranked. Empty when the
+    #: analysis abstained, which is a different state from "no causes exist".
+    candidate_causes: list[CandidateCauseOut] = Field(default_factory=list)
+    causal_analysis_abstained: bool = False
+    causal_analysis_reason: str | None = None
+    #: Every failure event found, oldest first -- the timeline the UI draws.
+    historical_occurrences: list[dict[str, Any]] = Field(default_factory=list)
+    related_work_orders: list[dict[str, Any]] = Field(default_factory=list)
+    related_incidents: list[dict[str, Any]] = Field(default_factory=list)
+    sibling_history: list[dict[str, Any]] = Field(default_factory=list)
+    open_corrective_actions: list[dict[str, Any]] = Field(default_factory=list)
+    management_of_change: list[dict[str, Any]] = Field(default_factory=list)
     #: Counts of evidence actually retrieved, per source. Integers only.
     evidence_gathered: dict[str, int] = Field(default_factory=dict)
     #: Deterministic reliability computations over that evidence. Kept separate
@@ -516,6 +549,33 @@ class RCAResponse(BaseModel):
     duplicate_of_open_capa: str | None = None
     overall_confidence: float | None = None
     citations: list[Citation] = Field(default_factory=list)
+
+
+class EventEvaluationRequest(BaseModel):
+    """An event to run the proactive matchers against.
+
+    Deliberately not tied to a work-order shape: the same matchers should serve a
+    CMMS notification, an operator round observation, or an inspection finding,
+    and all any of them needs to supply is what happened and to what.
+    """
+
+    event_type: str = Field(default="work_order.created", max_length=64)
+    asset_tag: str | None = Field(default=None, max_length=64)
+    description: str = Field(min_length=3, max_length=4000)
+    ref_id: str | None = Field(default=None, max_length=64)
+    #: Evaluate without storing, for inspecting the matchers.
+    dry_run: bool = False
+
+
+class LessonsRequest(BaseModel):
+    """Describe an event; get the history that resembles it."""
+
+    description: str = Field(min_length=3, max_length=4000)
+    asset_tag: str | None = Field(default=None, max_length=64)
+    #: Set when asking on behalf of an existing incident, so it does not match
+    #: itself at 1.0 and crowd out the precedent that matters.
+    exclude_incident_id: str | None = Field(default=None, max_length=64)
+    limit: int = Field(default=5, ge=1, le=25)
 
 
 # ---------------------------------------------------------------------------
@@ -571,13 +631,25 @@ class ComplianceResponse(BaseModel):
 
 class Notification(BaseModel):
     notification_id: int
-    severity: Literal["critical", "high", "medium", "info"]
+    severity: Literal["critical", "high", "medium", "low", "info"]
+    #: What kind of finding raised this, derived from ``pattern_id``. Lets the UI
+    #: group and icon without parsing the identifier.
+    kind: str | None = None
     title: str
     message: str
     reason: str
     asset_tag: str | None = None
     audience_role: str | None = None
-    evidence: list[EvidenceRef] = Field(default_factory=list)
+    #: The records behind the finding, shaped by what kind of finding it is: the
+    #: matched incident and its signals for a recurrence, the open CAPA list for
+    #: an outstanding action, the failing requirements for a compliance gap.
+    #:
+    #: Deliberately a structured object rather than the flat list of chunk quotes
+    #: this field originally held. The evidence for "two corrective actions
+    #: already cover this asset and both are open" is those two actions, and
+    #: flattening them into quotes destroys exactly what makes the notification
+    #: actionable.
+    evidence: dict[str, Any] = Field(default_factory=dict)
     pattern_id: str | None = None
     match_score: float | None = None
     data_class: DataClass

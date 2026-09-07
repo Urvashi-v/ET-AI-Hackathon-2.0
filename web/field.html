@@ -59,6 +59,14 @@
       <div class="small dim">Loading asset context…</div>
     </section>
 
+    <section class="alerts" data-alerts hidden>
+      <div class="alerts-head">
+        <strong data-alerts-count>Alerts</strong>
+        <button type="button" class="small ghost" data-alerts-refresh>Refresh</button>
+      </div>
+      <div data-alerts-list></div>
+    </section>
+
     <div class="chip-row" style="margin:14px 0" data-quick></div>
 
     <section data-result></section>
@@ -73,7 +81,7 @@
   </div>
 
   <script type="module">
-    import { api, streamQuery } from './js/api.js';
+    import { api, streamQuery, subscribeEvents } from './js/api.js';
     import {
       esc, provBadge, renderError, renderEmpty, renderCapability,
       confidenceBand, fmtDate, tagChip, qs,
@@ -278,6 +286,101 @@
     });
 
     loadAsset();
+
+    // ------------------------------------------------------- notifications
+
+    /**
+     * Alerts for the technician standing in front of the machine.
+     *
+     * Every row here is a stored notification raised by the backend event
+     * pipeline — a matcher ran against real records and concluded something.
+     * Nothing is generated in this page, nothing is produced on a timer, and
+     * the panel stays hidden when there is nothing to say rather than showing
+     * a reassuring "all clear" the system has not actually established.
+     *
+     * Filtered to this role by default: the compliance gap belongs to the HSE
+     * officer, and burying the superseded-procedure warning underneath it is
+     * how the one that matters at the machine gets missed.
+     */
+    const ALERT_TONE = { critical: 'danger', high: 'danger', medium: 'warn', low: 'info', info: 'info' };
+
+    async function loadAlerts(assetTag) {
+      const node = $('[data-alerts-list]');
+      try {
+        const params = { unacknowledged_only: true, limit: 20 };
+        if (assetTag) params.asset_tag = assetTag;
+        const data = await api.notifications(params);
+        renderAlerts(data);
+      } catch (error) {
+        // A failed alert fetch must not take the page down; the copilot below
+        // still works and is the reason the technician opened this.
+        $('[data-alerts]').hidden = false;
+        node.innerHTML = `<div class="alert"><div class="alert-body">
+          <strong>Alerts unavailable</strong>
+          <div class="small dim">${esc(error.message || 'Could not reach the notification store.')}</div>
+        </div></div>`;
+      }
+    }
+
+    function renderAlerts(data) {
+      const node = $('[data-alerts-list]');
+      const items = data.items || [];
+      $('[data-alerts]').hidden = items.length === 0;
+      if (!items.length) return;
+
+      $('[data-alerts-count]').textContent =
+        `${items.length} alert${items.length === 1 ? '' : 's'}`;
+      node.innerHTML = items.map((n) => `
+        <article class="alert ${esc(ALERT_TONE[n.severity] || 'info')}">
+          <div class="alert-body">
+            <div class="row tight">
+              <span class="badge ${esc(ALERT_TONE[n.severity] || 'info')}">${esc(n.severity)}</span>
+              <strong class="small">${esc(n.title)}</strong>
+            </div>
+            <div class="small" style="margin-top:4px">${esc(n.message)}</div>
+            <div class="small dim" style="margin-top:4px">${esc(n.reason)}</div>
+            <div class="row tight" style="margin-top:7px">
+              <span class="small dim mono">${esc(n.kind || '')}</span>
+              ${n.asset_tag ? `<span class="badge neutral no-dot mono">${esc(n.asset_tag)}</span>` : ''}
+              <span class="spacer"></span>
+              <button type="button" class="small ghost" data-ack="${n.notification_id}">Acknowledge</button>
+            </div>
+          </div>
+        </article>`).join('');
+    }
+
+    document.addEventListener('click', async (event) => {
+      const button = event.target.closest('[data-ack]');
+      if (button) {
+        button.disabled = true;
+        button.textContent = 'Acknowledging…';
+        try {
+          await api.acknowledge(button.dataset.ack);
+          await loadAlerts(currentAssetTag());
+        } catch (error) {
+          button.disabled = false;
+          button.textContent = 'Acknowledge';
+        }
+        return;
+      }
+      if (event.target.closest('[data-alerts-refresh]')) {
+        await loadAlerts(currentAssetTag());
+      }
+    });
+
+    function currentAssetTag() {
+      return new URLSearchParams(window.location.search).get('asset') || null;
+    }
+
+    loadAlerts(currentAssetTag());
+
+    // Live delivery. The store is the source of truth and the stream is the push
+    // half of the same fact, so an arriving event re-reads rather than trusting
+    // the payload -- which also means a missed event self-heals on the next one.
+    subscribeEvents({
+      'notification.raised': () => loadAlerts(currentAssetTag()),
+    });
+
   </script>
 </body>
 </html>

@@ -545,3 +545,66 @@ pre {
 .notice.danger { border-left-color: var(--danger); background: var(--danger-bg); color: var(--fg-0); }
 .notice.info   { border-left-color: var(--info);   background: var(--info-bg); color: var(--fg-0); }
 .notice a { color: inherit; }
+
+/* Timeline. One axis for the asset and its siblings, because a pattern across a
+   duty/standby pair is invisible in two separate lists — which is precisely how
+   two identical seal failures three years apart went uninvestigated together. */
+.timeline > li { position: relative; padding-left: 16px; }
+.timeline > li::before {
+  content: ""; position: absolute; left: 4px; top: 14px;
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--accent); box-shadow: 0 0 0 2px var(--bg-1);
+}
+.timeline > li::after {
+  content: ""; position: absolute; left: 7px; top: 21px; bottom: -12px; width: 1px;
+  background: var(--line-strong);
+}
+.timeline > li:last-child::after { display: none; }
+/* Sibling events read as related-but-elsewhere: same axis, hollow marker. */
+.timeline > li.sibling::before { background: var(--bg-1); box-shadow: 0 0 0 2px var(--fg-2); }
+
+/* Compliance findings. The four states are visually distinct because conflating
+   "we checked and it fails" with "we could not check" is the specific dishonesty
+   this dashboard exists to avoid. */
+.finding { border-left: 3px solid var(--line-strong); padding-left: 10px; }
+.finding.satisfied          { border-left-color: var(--ok); }
+.finding.gap                { border-left-color: var(--danger); }
+.finding.needs_verification { border-left-color: var(--warn); }
+.finding.not_evaluable      { border-left-color: var(--fg-2); opacity: .78; }
+
+/* Counter strip. Used where a handful of headline numbers need to be readable
+   at a glance and the denominator matters as much as the numerator — a
+   compliance count is meaningless without knowing what it was taken over. */
+.counters {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: 1px; background: var(--line); border-bottom: 1px solid var(--line);
+}
+.counter { background: var(--bg-2); padding: 11px 13px; display: flex; flex-direction: column; gap: 2px; }
+.counter-value { font-size: 1.32rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+.counter-value.ok { color: var(--ok); }
+.counter-value.danger { color: var(--danger); }
+.counter-value.warn { color: var(--warn); }
+.counter-value.dim { color: var(--fg-2); }
+.counter-label { font-size: 0.68rem; color: var(--fg-2); text-transform: uppercase; letter-spacing: .04em; }
+
+/* Field alerts. Sized for a gloved thumb on a phone at the machine, and ordered
+   so the severity badge is the first thing read. The panel is absent rather
+   than empty when nothing is outstanding — an "all clear" the system has not
+   established is worse than silence. */
+.alerts { border: 1px solid var(--line-strong); border-radius: 7px; overflow: hidden; background: var(--bg-2); }
+.alerts-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 9px 12px; border-bottom: 1px solid var(--line); background: var(--bg-3);
+  font-size: 0.82rem;
+}
+.alert { border-bottom: 1px solid var(--line); border-left: 3px solid var(--fg-2); }
+.alert:last-child { border-bottom: none; }
+.alert.danger { border-left-color: var(--danger); }
+.alert.warn   { border-left-color: var(--warn); }
+.alert.info   { border-left-color: var(--info); }
+.alert-body { padding: 11px 13px; }
+.alert-body .spacer { flex: 1; }
+@media (max-width: 640px) {
+  .alert-body { padding: 13px; }
+  .alert-body button { min-height: 38px; }
+}

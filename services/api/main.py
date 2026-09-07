@@ -33,6 +33,7 @@ from services.api.routers import (
     graph_router,
     health,
     ingest,
+    lessons,
     notifications,
     query,
     rca,
@@ -191,6 +192,7 @@ app.include_router(query.router, prefix=API_PREFIX)
 app.include_router(assets.router, prefix=API_PREFIX)
 app.include_router(graph_router.router, prefix=API_PREFIX)
 app.include_router(rca.router, prefix=API_PREFIX)
+app.include_router(lessons.router, prefix=API_PREFIX)
 app.include_router(compliance.router, prefix=API_PREFIX)
 app.include_router(notifications.router, prefix=API_PREFIX)
 app.include_router(feedback.router, prefix=API_PREFIX)

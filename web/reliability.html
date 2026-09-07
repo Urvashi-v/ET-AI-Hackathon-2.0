@@ -83,7 +83,39 @@
           <div class="card-body flush scroll-y h-360" data-similar></div>
         </section>
 
-        <section class="card">
+                <section class="card" data-causes-card hidden>
+          <div class="card-head">
+            <h2>Candidate causes</h2>
+            <span class="small dim" data-causes-note></span>
+          </div>
+          <div class="card-body flush" data-causes></div>
+        </section>
+
+        <section class="card" data-timeline-card hidden>
+          <div class="card-head">
+            <h2>Timeline</h2>
+            <span class="small dim">This asset and identical equipment on one axis</span>
+          </div>
+          <div class="card-body flush scroll-y h-360" data-timeline></div>
+        </section>
+
+        <section class="card" data-actions-card hidden>
+          <div class="card-head">
+            <h2>Open corrective actions</h2>
+            <span class="small dim" data-actions-note></span>
+          </div>
+          <div class="card-body flush" data-open-actions></div>
+        </section>
+
+        <section class="card" data-lessons-card hidden>
+          <div class="card-head">
+            <h2>Lessons learned</h2>
+            <span class="small dim" data-lessons-note></span>
+          </div>
+          <div class="card-body flush" data-lessons></div>
+        </section>
+
+<section class="card">
           <div class="card-head"><h2>Discriminating evidence needed</h2></div>
           <div class="card-body" data-missing></div>
         </section>
@@ -103,6 +135,9 @@
     wireAssetLinks();
 
     const $ = (sel) => document.querySelector(sel);
+    // Panels are hidden until they have something real to show, rather than
+    // rendering an empty card that looks like a missing feature.
+    const show = (sel, visible = true) => { const n = $(sel); if (n) n.hidden = !visible; };
 
     async function loadAssetList() {
       try {
@@ -278,6 +313,10 @@
 
       try {
         const rca = await api.rca(payload);
+        renderCauses(rca);
+        renderTimeline(rca);
+        renderOpenActions(rca);
+        loadLessons(payload.asset_tag, payload.failure_description);
 
         status.innerHTML = renderCapability(rca.status) + (rca.duplicate_of_open_capa ? `
           <div class="capability" style="margin-top:10px;border-color:var(--warn)">
@@ -364,6 +403,154 @@
       loadDossier(requested);
       runRca({ asset_tag: requested, failure_description: 'High vibration and seal leak' });
     })();
+
+    // ---------------------------------------------------------------- day 4
+
+    /**
+     * Candidate causes, ranked from recorded evidence.
+     *
+     * The score is shown as a bar rather than a number because it is an
+     * ordering, not a probability -- and a bare "3.41" invites the reader to
+     * treat it as one. What is shown numerically is the thing that is actually
+     * countable: how many documents record this mechanism, and how many of them
+     * are about this asset rather than its sibling.
+     */
+    function renderCauses(rca) {
+      const node = $('[data-causes]');
+      show('[data-causes-card]');
+      if (rca.causal_analysis_abstained || !rca.candidate_causes?.length) {
+        $('[data-causes-note]').textContent = 'abstained';
+        node.innerHTML = `<div style="padding:14px">
+          <div class="notice warn">
+            <strong>No causal ranking produced.</strong>
+            ${esc(rca.causal_analysis_reason || 'Insufficient recorded evidence.')}
+          </div>
+        </div>`;
+        return;
+      }
+
+      const top = rca.candidate_causes[0].score || 1;
+      $('[data-causes-note]').textContent =
+        `${rca.candidate_causes.length} ranked · confidence ${
+          rca.overall_confidence === null ? 'n/a' : (rca.overall_confidence * 100).toFixed(0) + '%'
+        }`;
+      node.innerHTML = `<ul class="list">${rca.candidate_causes.map((c, i) => `
+        <li>
+          <div class="row" style="justify-content:space-between">
+            <span class="row tight">
+              <span class="badge ${i === 0 ? 'warn' : 'neutral'} no-dot mono">${i + 1}</span>
+              <strong class="small">${esc(c.label)}</strong>
+            </span>
+            <span class="small dim mono tabular">${c.occurrences} record(s)</span>
+          </div>
+          <div class="trace-bar" style="margin-top:6px">
+            <div class="trace-fill" style="width:${Math.max(3, Math.round((c.score / top) * 100))}%"></div>
+          </div>
+          <div class="small dim" style="margin-top:5px">${esc(c.rationale)}</div>
+          <details style="margin-top:6px">
+            <summary class="small">Evidence (${c.evidence.length})</summary>
+            <ul class="mention-list">${c.evidence.map((e) => `
+              <li>
+                <span class="mono">${esc(e.ref_id)}</span>
+                <span class="small dim">${esc(e.kind.replace('_', ' '))}${e.occurred_on ? ' · ' + esc(e.occurred_on) : ''}${e.is_sibling ? ' · sibling ' + esc(e.asset_tag || '') : ''}</span>
+                <div class="small" style="color:var(--fg-1)">${esc((e.quote || '').slice(0, 220))}</div>
+              </li>`).join('')}</ul>
+          </details>
+        </li>`).join('')}</ul>`;
+    }
+
+    /** Every recorded event on one axis, sibling events flagged. */
+    function renderTimeline(rca) {
+      const node = $('[data-timeline]');
+      const events = rca.historical_occurrences || [];
+      if (!events.length) { show('[data-timeline-card]', false); return; }
+      show('[data-timeline-card]');
+      node.innerHTML = `<ul class="list timeline">${events.map((e) => `
+        <li class="${e.is_sibling ? 'sibling' : ''}">
+          <div class="row" style="justify-content:space-between">
+            <span class="row tight">
+              <span class="mono small">${esc(e.date || '—')}</span>
+              <span class="badge ${e.kind === 'incident' ? 'danger' : 'neutral'} no-dot">${esc(e.kind.replace('_', ' '))}</span>
+              <span class="mono small">${esc(e.ref_id || '')}</span>
+              ${e.is_sibling ? `<span class="badge info no-dot">${esc(e.asset_tag || 'sibling')}</span>` : ''}
+            </span>
+            ${e.downtime_hours ? `<span class="small dim mono tabular">${e.downtime_hours} h down</span>` : ''}
+          </div>
+          <div class="small" style="margin-top:3px">${esc(e.label || '')}</div>
+          ${e.detail ? `<div class="small dim" style="margin-top:2px">${esc(e.detail.slice(0, 200))}</div>` : ''}
+        </li>`).join('')}</ul>`;
+    }
+
+    /** Actions the plant already decided on and has not closed. */
+    function renderOpenActions(rca) {
+      const node = $('[data-open-actions]');
+      const actions = rca.open_corrective_actions || [];
+      if (!actions.length) { show('[data-actions-card]', false); return; }
+      show('[data-actions-card]');
+      const sibling = actions.filter((a) => a.is_sibling).length;
+      $('[data-actions-note]').textContent =
+        `${actions.length} open${sibling ? ` · ${sibling} raised against identical equipment` : ''}`;
+      node.innerHTML = `<ul class="list">${actions.map((a) => `
+        <li>
+          <div class="row" style="justify-content:space-between">
+            <span class="row tight">
+              <span class="badge warn no-dot mono">${esc(a.capa_id)}</span>
+              <span class="small">${esc(a.owner || 'unassigned')}</span>
+              ${a.is_sibling ? `<span class="badge info no-dot">raised against ${esc(a.raised_against)}</span>` : ''}
+            </span>
+            <span class="small dim mono">${esc(a.due_date || 'no due date')}</span>
+          </div>
+          <div class="small" style="margin-top:4px">${esc(a.action || '')}</div>
+          <div class="small dim" style="margin-top:2px">from ${esc(a.from_incident || '')}</div>
+        </li>`).join('')}</ul>`;
+    }
+
+    /**
+     * Precedent for this failure, from the lessons-learned agent.
+     *
+     * Fetched separately rather than folded into the RCA response: it answers a
+     * different question ("has this happened before, anywhere?") and is useful
+     * even when the RCA abstains.
+     */
+    async function loadLessons(assetTag, description) {
+      const node = $('[data-lessons]');
+      show('[data-lessons-card]');
+      renderLoading(node, 'Matching against incident history');
+      try {
+        const result = await api.lessons({ description, asset_tag: assetTag, limit: 5 });
+        $('[data-lessons-note]').textContent =
+          `${result.incidents_considered} incident(s) compared · semantic matching ${result.semantic_matching.state}`;
+        if (!result.matches.length) {
+          renderEmpty(node, {
+            title: 'No precedent on file',
+            body: result.detail || 'No historical incident scored above the similarity floor.',
+          });
+          return;
+        }
+        node.innerHTML = `<ul class="list">${result.matches.map((m) => `
+          <li>
+            <div class="row" style="justify-content:space-between">
+              <span class="row tight">
+                <span class="badge ${m.corrective_actions.some((a) => a.is_open) ? 'warn' : 'neutral'} no-dot mono">${esc(m.incident_id)}</span>
+                <span class="small">${esc(m.occurred_on || '')}</span>
+                <span class="badge neutral no-dot">${esc(m.asset_tag || '')}</span>
+              </span>
+              <span class="small dim mono tabular">${(m.similarity * 100).toFixed(0)}% match</span>
+            </div>
+            <div class="small" style="margin-top:4px;color:var(--fg-1)">${esc((m.root_cause || m.immediate_cause || '').slice(0, 240))}</div>
+            <div class="small dim" style="margin-top:4px">Why: ${m.match_reasons.map(esc).join('; ')}</div>
+            ${m.corrective_actions.length ? `<div class="stack tight" style="margin-top:6px">
+              ${m.corrective_actions.map((a) => `<div class="small">
+                <span class="badge ${a.is_open ? 'warn' : 'ok'} no-dot mono">${esc(a.action_id)}</span>
+                ${esc(a.status || '')} — ${esc(a.description || '')}
+              </div>`).join('')}
+            </div>` : ''}
+          </li>`).join('')}</ul>`;
+      } catch (error) {
+        renderError(node, error, { title: 'Could not load precedent' });
+      }
+    }
+
   </script>
 </body>
 </html>

@@ -7,7 +7,7 @@ a provenance-carrying knowledge graph, and hybrid retrieval — with the five
 capabilities from the brief built as query patterns over it rather than as five
 separate demos.
 
-**Day 3 of the build.** This README separates what runs from what does not. See
+**Day 4 of the build.** This README separates what runs from what does not. See
 [Feature status](#feature-status).
 
 ---
@@ -30,7 +30,7 @@ saved to `eval/results/` with the configuration it ran under.
 | Mention resolution rate | 100% | 101 mentions, all resolved to a canonical asset |
 | Cross-system assets | 46.7% | assets evidenced by more than one *source system* |
 | Revision series reconciled | 5 | 1 with a real supersession chain, 0 needing human resolution |
-| p50 / p95 latency | 3.11 s / 3.96 s | end-to-end; the cross-encoder is ~2.0 s of it |
+| p50 / p95 latency | 1.90 s / 2.39 s | end-to-end; the cross-encoder is most of it |
 | Extractions with a verified verbatim span | **100%** | every asserted fact traces to text that literally occurs in the source |
 | OCR mean confidence | 0.95 | 203 words recovered from the scanned document |
 | Answer correctness | **not measurable** | no LLM configured; extraction answers, but correctness needs a grader |
@@ -48,7 +48,19 @@ Per category:
 | unanswerable | 4 | n/a | 1.000 | 0.750 |
 
 Corpus behind those numbers: 11 documents (4 real PDFs, 2 CSV exports, 5
-Markdown) → 98 chunks → 101 mentions → 15 canonical assets.
+Markdown) → 98 chunks → 101 mentions → 15 canonical assets → 2 incidents,
+5 corrective actions, 1 management-of-change record, 20 requirements.
+
+### Agent capabilities, measured on P-101B
+
+Produced by `python scripts/demo_spine.py` against the live stack.
+
+| Capability | Operational | What it produced |
+|---|---|---|
+| **RCA** | yes, no credential | 6 candidate causes ranked from 14 recorded statements; leading cause *dry running* with 5 records across 4 documents; MTBF 908.5 days; 2 open CAPAs surfaced from the sibling |
+| **Lessons learned** | yes, real embeddings | 2 incidents compared, both matched — 0.73 and 0.74 cosine, one on the same pump, one on the sibling; the sibling's 2 open actions listed |
+| **Compliance** | yes, evidence-backed | 20 requirements evaluated; on V-102: 4 satisfied, 5 gaps, 44.4% of 9 decidable. On P-101B: 5 gaps, 2 needing verification, 13 not evaluable |
+| **Proactive** | yes, event-driven | 4 notifications from one work-order event, each with its evidence and audience |
 
 **Two rows deserve reading together.** Abstention recall and false abstention are
 a pair: either can be driven to a perfect score by a system that always abstains
@@ -86,7 +98,7 @@ Then open **http://localhost:8000** (API docs at `/docs`, Neo4j browser at
 ```bash
 docker compose exec api python scripts/load_requirements.py   # compliance corpus
 python eval/run_eval.py                                       # the numbers above
-python -m pytest -q -m "not integration"                      # 332 unit tests
+python -m pytest -q -m "not integration"                      # 357 unit tests
 python -m pytest -q -m integration                            # 64 API tests
 ```
 
@@ -139,6 +151,11 @@ Honest categories. Nothing below is described as working when it is mocked.
 | **Document revision lineage** | Revisions grouped by document number (`doc_id` is a content hash, so it cannot group them), ordered into revision *levels*, and linked with `SUPERSEDES` in both stores. Same-revision documents in different formats are recognised as renditions, not a sequence. Unorderable series are flagged for a human, never guessed. |
 | **Source viewer** | Clicking a citation opens the exact extracted span with the cited sentence highlighted, the rendered PDF page beside it, the entities found in it, and — first, before content — whether the document has been superseded. |
 | **Model warm-up** | ONNX sessions reach steady speed only after several inferences (measured: 15.6 s → 4.7 s → 1.8 s). Paid at startup on synthetic strings so the first real question is not the slowest. |
+| **Structured record extraction** | Incident and MOC records parsed deterministically from section headings and field labels — no LLM. Every field carries the chunk that asserted it. A document without the expected structure yields **no record** rather than a guessed one, and two renditions of one report converge on a single node. |
+| **Root cause analysis** | Candidate causes aggregated from cause statements the plant recorded, matched against ISO 14224 modes and a condition vocabulary, ranked by independent occurrences, subject weight, recency and cross-type corroboration. **Abstains below two records.** Open corrective actions queried across the sibling pair. |
+| **Lessons learned** | Incident similarity from four independent signals — semantic (the real embedding model, over already-stored vectors), failure mechanism, graph proximity, documentary cross-reference — each returned with the evidence that produced it. Empty result when there is no precedent. |
+| **Compliance evaluation** | Four verdict states, evaluated per testability mode. Only evidence-document and graph-state obligations can be decided from records; procedure-text obligations return a candidate control for human verification. `coverage_pct_of_decidable` names its own denominator. |
+| **Proactive event path** | Ingestion → graph changed → precedent, compliance, open-action and superseded-procedure matching → notification. Rows in Postgres, pushed over SSE, de-duplicated on pattern among unacknowledged findings. No timers anywhere. |
 | **SSE streaming** | Live ingestion events and streamed query pipeline stages — real stage completions, not timers. |
 
 ### Requires credentials — interface built, provider absent
@@ -253,9 +270,11 @@ services/
   common/     config · logging · errors · db · graph · bus · tags · schemas · migrate
   api/        FastAPI app + routers (health, ingest, documents, query, assets,
               graph, rca, compliance, notifications, feedback, events)
+  agents/     rca (cause ranking) · compliance (four verdict states) ·
+              lessons (incident similarity) · proactive (the event path)
   ingest/     storage · classify · parsers/ (pdf·text·docx·tabular·image) · ocr ·
-              chunk · extract · llm_extract · resolve · revisions · embeddings ·
-              graph_writer · pipeline · worker
+              chunk · extract · llm_extract · resolve · revisions · records ·
+              record_writer · embeddings · graph_writer · pipeline · worker
   retrieval/  intent (+decomposition) · lexical (BM25) · dense (pgvector) ·
               graph_retrieval · fusion (RRF) · rerank (cross-encoder) ·
               compose (extractive) · generate (LLM) · confidence · warmup ·
@@ -270,7 +289,7 @@ data/
   synthetic/  deterministic generators (CSV/Markdown + real PDFs) + SCHEMA.md
   requirements/ atomised requirements with per-entry provenance
 eval/         golden.jsonl (25 questions) · run_eval.py · results/
-tests/        396 tests — 332 unit, 64 integration
+tests/        421 tests — 357 unit, 64 integration
 docs/         architecture · ontology · security · adr/
 ```
 
@@ -300,68 +319,84 @@ python eval/run_eval.py
 Stated plainly, because a limitation you name is worth more than one a reviewer
 finds.
 
-1. **No abstractive generation without a credential, and correctness is
+1. **RCA candidate causes are aggregated, not reasoned.** The agent ranks
+   mechanisms that recorded evidence names. It does not build a causal *tree*
+   down to a systemic cause, and it cannot infer a mechanism nobody wrote down.
+   That is the deliberate trade for being unable to produce a confident RCA about
+   a pump it has no evidence for.
+2. **Compliance decides 5 of 20 requirements for a pump.** The rest need a
+   permit system (not connected), records the corpus does not hold, or human
+   judgement on procedure text. Reported as `not_evaluable`, never as passing.
+3. **All 20 requirements are `paraphrase_for_demo`.** No verbatim regulatory text
+   is loaded, because none was supplied. The schema, provenance field and
+   evaluation logic are real; the clause wording is not quotable and the API
+   says so on every response.
+4. **Lessons learned has two incidents to compare against.** The four signals
+   and the thresholds are real, but the discrimination they provide is barely
+   exercised at this corpus size. More incident reports is the single highest-
+   value data addition.
+5. **No abstractive generation without a credential, and correctness is
    therefore ungraded.** The extractive answerer produces real cited answers with
    no credential, so the copilot is not merely a search box. But grading answers
    against reference text needs a judge, so answer correctness is reported as
    `not_measurable` rather than as a number.
-2. **Extraction cannot combine two half-answers into one sentence.** It selects
+6. **Extraction cannot combine two half-answers into one sentence.** It selects
    sentences; it does not synthesise. A question whose answer is spread across
    two documents gets both sentences, not the synthesis a reader might want.
    That is the deliberate trade for being structurally unable to hallucinate.
-3. **False abstention rate is 0.095** — 2 of 21 answerable questions withheld.
+7. **False abstention rate is 0.095** — 2 of 21 answerable questions withheld.
    Both are vocabulary mismatches: the answer is correct but reuses none of the
    question's distinctive words ("which documents *describe* this location"),
    and the relevance measure is lexical. An entailment model would fix it; a
    lower threshold would only trade these for wrong answers.
-4. **One unanswerable question is answered with a caveat.** "What is the NPSH
+8. **One unanswerable question is answered with a caveat.** "What is the NPSH
    required for P-101B?" scores 0.36 relevance against a 0.34 floor, because the
    corpus genuinely *discusses* NPSH — an MOC notes the datasheet values no
    longer describe the machine — without stating the value. Nudging the floor to
    0.38 would score 4/4 and mean nothing; the threshold is set from measured
    separation, not from this question.
-5. **Comparative questions score 0.667 context recall** (3 questions). "Which of
+9. **Comparative questions score 0.667 context recall** (3 questions). "Which of
    the two pumps has more downtime?" names no parseable tag, so the graph leg has
    no anchor. Needs an aggregation router.
-6. **Diagnostic intent accuracy is 0.33** (3 questions). Two are phrased without a
+10. **Diagnostic intent accuracy is 0.33** (3 questions). Two are phrased without a
    causal marker. Deliberately *not* fixed by adding their exact wording to the
    rules — tuning a classifier to its own benchmark makes the benchmark
    meaningless.
-7. **Reranking is ~2.0 s of a ~3.1 s query.** A 6-layer cross-encoder over 25
+11. **Reranking is ~2.0 s of a ~3.1 s query.** A 6-layer cross-encoder over 25
    candidates on a container CPU. `RERANK_CANDIDATES` and `ONNX_THREADS` are the
    dials; a GPU or a smaller shortlist both help. Retrieval itself (BM25 + dense
    + graph) totals ~155 ms.
-8. **`Incident`, `MOC` and `CAPA` nodes are not created from prose.** The
+12. **`Incident`, `MOC` and `CAPA` nodes are not created from prose.** The
    documents ingest and link, but the structured nodes need the LLM extractor. So
    RCA reports `incidents: 0` for P-101B even though two incident reports about
    it are ingested and retrievable.
-9. **Bounding boxes are per block, not per sentence.** The source viewer does
+13. **Bounding boxes are per block, not per sentence.** The source viewer does
    highlight the cited sentence in the *extracted text*, but it locates it by
    string match, and the stored rectangle still surrounds the whole passage. So
    the rendered PDF page is shown without a box drawn on the cited line.
    Per-sentence geometry needs word offsets carried through chunk splitting,
    which is not done.
-10. **OCR reading order is good, not perfect.** Tesseract's `--psm 3` layout
+14. **OCR reading order is good, not perfect.** Tesseract's `--psm 3` layout
    analysis handles the corpus correctly, but a form with columns aligned across
    a page can still interleave. The per-word geometry needed to detect and fix
    that is stored; the correction is not written.
-11. **The P&ID is classified, not understood.** Vector density routes it to the
+15. **The P&ID is classified, not understood.** Vector density routes it to the
    drawing pipeline and its text layer is indexed, so tags on the sheet are
    searchable. Symbol detection, line tracing and topology reconstruction are
    not built, so `FEEDS` / `ISOLATES` edges do not exist.
 
-12. **One unresolved review item** in the demo corpus: `P-101` appears without an
+16. **One unresolved review item** in the demo corpus: `P-101` appears without an
    item suffix alongside `P-101A`/`P-101B`. It is flagged for review rather than
    silently asserted as a third pump — the intended behaviour, visible on the
    ingestion page.
-13. **Neo4j Community** has no `NODE KEY` constraints, so composite keys are
+17. **Neo4j Community** has no `NODE KEY` constraints, so composite keys are
     single-property unique constraints with existence enforced by the loader.
-14. **The corpus is synthetic content in real containers.** The PDFs are genuine
+18. **The corpus is synthetic content in real containers.** The PDFs are genuine
     PDF files — real text layers, real ruled tables, a real image-only scan, real
     vector geometry — but the plant they describe is invented and every page says
     so. Real industrial documents remain the single largest quality lever; see
     [data/corpus/SOURCES.md](data/corpus/SOURCES.md).
-15. **Not deployable.** No auth, no multi-tenancy, no PII redaction, no TLS, no
+19. **Not deployable.** No auth, no multi-tenancy, no PII redaction, no TLS, no
     rate limiting. See [docs/security.md](docs/security.md).
 
 ---
@@ -371,6 +406,7 @@ finds.
 * [docs/architecture.md](docs/architecture.md) — seven layers, three paths, entity resolution
 * [docs/ingestion.md](docs/ingestion.md) — the write path: parsers, OCR, provenance, extraction, failure handling
 * [docs/retrieval.md](docs/retrieval.md) — the read path: three retrievers, fusion, reranking, extractive answering, abstention
+* [docs/agents.md](docs/agents.md) — RCA, compliance, lessons learned, and the proactive path
 * [docs/ontology.md](docs/ontology.md) — labels, edges, and which are populated today
 * [docs/security.md](docs/security.md) — what is enforced and what is not
 * [docs/adr/0001-technology-choices.md](docs/adr/0001-technology-choices.md) — why each component, and what was rejected
