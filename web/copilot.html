@@ -9,7 +9,7 @@
 <body>
   <header class="app-header" data-app-header></header>
 
-  <main class="app-main">
+  <main class="app-main" id="main" tabindex="-1">
     <div class="page-head">
       <div>
         <p class="eyebrow">Read path</p>
@@ -146,6 +146,7 @@
     import {
       esc, provBadge, renderLoading, renderError, renderEmpty, renderCapability,
       renderConfidence, mountHeader, mountSystemStatus, wireAssetLinks, tagChip, docTypeChip,
+      revisionChip, qs,
     } from './js/ui.js';
     import { wireCitationLinks } from './js/sourceviewer.js';
 
@@ -184,6 +185,24 @@
     function pushStep(html) {
       steps.push(`<li>${html}</li>`);
       progressNode.innerHTML = `<ul class="list">${steps.join('')}</ul>`;
+    }
+
+    // An answer with its evidence is a thing people want to send to each other:
+    // "here is the question, here is what the corpus said, look at citation 3".
+    // Without a URL for it, the only way to share one is a screenshot, which
+    // drops every link back to the source. The form is the single entry point,
+    // so a deep link fills it and submits it rather than duplicating the flow.
+    function applyDeepLink() {
+      const form = $('[data-ask-form]');
+      const question = qs('q');
+      if (!question) return;
+      form.querySelector('[name="question"]').value = question;
+      for (const name of ['role', 'asset_tag', 'work_order', 'mode']) {
+        const value = qs(name);
+        const field = form.querySelector(`[name="${name}"]`);
+        if (value && field) field.value = value;
+      }
+      form.requestSubmit();
     }
 
     $('[data-ask-form]').addEventListener('submit', async (event) => {
@@ -446,12 +465,14 @@
             data-cite-doc="${esc(c.doc_id)}"
             data-cite-chunk="${esc(c.chunk_id)}"
             data-cite-page="${esc(c.page ?? '')}"
-            aria-label="Open ${esc(c.doc_title)}${c.page ? `, page ${esc(c.page)}` : ''}">
+            aria-label="Open ${esc(c.doc_title)}${c.page ? `, page ${esc(c.page)}` : ''}${
+              c.is_current === false ? ' — superseded revision' : ''}">
           <div class="row" style="justify-content:space-between">
             <span class="row tight">
               <span class="badge neutral no-dot mono">${esc(c.marker)}</span>
               <strong class="small">${esc(c.doc_title)}</strong>
               ${docTypeChip(c.doc_type)}
+              ${revisionChip(c)}
               ${provBadge(c.data_class)}
             </span>
             <span class="small dim mono">${esc(c.retriever)} · ${Number(c.score).toFixed(4)}</span>
@@ -532,6 +553,7 @@
           </div>`;
       } catch (error) { renderError(node, error); }
     })();
+    applyDeepLink();
   </script>
 </body>
 </html>

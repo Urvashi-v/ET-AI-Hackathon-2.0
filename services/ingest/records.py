@@ -76,7 +76,12 @@ class CorrectiveAction:
         cost of chasing a closed action is a wasted phone call, and the cost of
         missing an open one is the corrective action nobody did.
         """
-        return (self.status or "").strip().upper() not in {"CLOSED", "COMPLETE", "COMPLETED", "DONE"}
+        return (self.status or "").strip().upper() not in {
+            "CLOSED",
+            "COMPLETE",
+            "COMPLETED",
+            "DONE",
+        }
 
 
 @dataclass(slots=True)
@@ -132,13 +137,19 @@ _LABELS: dict[str, tuple[str, ...]] = {
 #: to the scanned copy of INC-2019-07 on the first run.
 _SECTIONS: dict[str, tuple[str, ...]] = {
     "narrative": (
-        "what happened", "description of event", "event description", "summary",
+        "what happened",
+        "description of event",
+        "event description",
+        "summary",
         "narrative",
     ),
     "immediate_cause": ("immediate cause", "direct cause", "apparent cause", "immediate_cause"),
     "root_cause": ("root cause", "underlying cause", "basic cause", "root_cause"),
     "recurrence": (
-        "analysis of recurrence", "recurrence", "previous occurrences", "recurrence_analysis",
+        "analysis of recurrence",
+        "recurrence",
+        "previous occurrences",
+        "recurrence_analysis",
     ),
     "actions": (
         "corrective and preventive actions",
@@ -151,7 +162,9 @@ _SECTIONS: dict[str, tuple[str, ...]] = {
     ),
 }
 
-_LABEL_LINE = re.compile(r"([A-Za-z][A-Za-z /_-]{2,28}?)\s*:\s*(.+?)(?=\s{2,}[A-Za-z][A-Za-z /_-]{2,28}?\s*:|$)")
+_LABEL_LINE = re.compile(
+    r"([A-Za-z][A-Za-z /_-]{2,28}?)\s*:\s*(.+?)(?=\s{2,}[A-Za-z][A-Za-z /_-]{2,28}?\s*:|$)"
+)
 
 #: A CAPA/action table row: | ID | Action | Owner | Due | Status |
 _TABLE_ROW = re.compile(r"^\s*\|(.+)\|\s*$")

@@ -154,6 +154,8 @@ async def answer_question(
             retriever=p.retriever,
             rank=p.rank,
             score=round(p.score, 6),
+            is_current=p.is_current,
+            revision=p.revision,
         )
         for p in passages
     ]
@@ -251,13 +253,9 @@ async def answer_question(
         entities=[e.get("canonical_tag") for e in understanding.entities],
         # --- what retrieval did ---------------------------------------------
         retrieval_sources=response.retrieval_sources,
-        candidates={
-            (leg.leg_id or leg.strategy): leg.candidates for leg in legs
-        },
+        candidates={(leg.leg_id or leg.strategy): leg.candidates for leg in legs},
         leg_state={(leg.leg_id or leg.strategy): leg.state.value for leg in legs},
-        leg_latency_ms={
-            (leg.leg_id or leg.strategy): round(leg.elapsed_ms, 1) for leg in legs
-        },
+        leg_latency_ms={(leg.leg_id or leg.strategy): round(leg.elapsed_ms, 1) for leg in legs},
         rerank_state=rerank_leg.state.value,
         rerank_candidates=rerank_leg.candidates,
         rerank_ms=round(rerank_leg.elapsed_ms, 1),
@@ -400,9 +398,7 @@ async def _answer(
             state=state,
             detail=detail.strip(),
             required_env=(
-                llm_status.required_env
-                if llm_status.state is not CapabilityState.AVAILABLE
-                else []
+                llm_status.required_env if llm_status.state is not CapabilityState.AVAILABLE else []
             ),
         ),
         claims=[
@@ -651,7 +647,7 @@ async def _rerank(
     else:
         # Fused order preserved. Reported, not silently skipped.
         ordered = passages
-        detail = result.detail
+        detail = result.detail or "Reranking did not run; the fused order is unchanged."
 
     kept = ordered[:final_k]
     for position, passage in enumerate(kept, start=1):
@@ -700,7 +696,8 @@ async def _hydrate(selected: list[fusion.FusedResult]) -> list[generate.ContextP
         """
         SELECT c.chunk_id, c.doc_id, c.text, c.section_path, c.page_from,
                c.data_class::text AS chunk_data_class,
-               d.title, d.doc_type::text AS doc_type, d.source_system, d.is_current
+               d.title, d.doc_type::text AS doc_type, d.source_system, d.is_current,
+               d.revision
           FROM document_chunks c
           JOIN documents d ON d.doc_id = c.doc_id
          WHERE c.chunk_id = ANY(%s)
@@ -733,6 +730,7 @@ async def _hydrate(selected: list[fusion.FusedResult]) -> list[generate.ContextP
                 rank=index,
                 score=fused_row.score,
                 is_current=bool(row["is_current"]),
+                revision=row["revision"],
                 source_system=row["source_system"],
             )
         )

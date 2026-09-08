@@ -157,7 +157,18 @@ export class GraphView {
         let dx = a.x - b.x;
         let dy = a.y - b.y;
         let distSq = dx * dx + dy * dy;
-        if (distSq < 1) { dx = Math.random() - 0.5; dy = Math.random() - 0.5; distSq = 1; }
+        if (distSq < 1) {
+          // Two nodes landed on top of each other, so the repulsion direction is
+          // undefined and the force would be infinite. Nudge them apart along a
+          // direction derived from their indices rather than from Math.random():
+          // the jitter is arbitrary either way, but a deterministic arbitrary one
+          // means the same graph lays out the same way twice, which matters when
+          // someone is comparing two screenshots or reporting what they saw.
+          const angle = ((i * 31 + j * 17) % 360) * (Math.PI / 180);
+          dx = Math.cos(angle);
+          dy = Math.sin(angle);
+          distSq = 1;
+        }
         const force = repulsion / distSq;
         const dist = Math.sqrt(distSq);
         const fx = (dx / dist) * force;

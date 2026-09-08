@@ -66,12 +66,15 @@ export function provBadge(dataClass) {
 // ---------------------------------------------------------------- states
 
 export function renderLoading(node, message = 'Loading') {
-  node.innerHTML = `<div class="state"><span class="spinner"></span> <span class="small">${esc(message)}…</span></div>`;
+  // role=status so a screen reader hears "loading" instead of silence.
+  node.innerHTML = `<div class="state" role="status">
+      <span class="spinner" aria-hidden="true"></span> <span class="small">${esc(message)}…</span>
+    </div>`;
 }
 
 export function renderEmpty(node, { title = 'Nothing here yet', body = '', action = '' } = {}) {
   node.innerHTML = `
-    <div class="state">
+    <div class="state" role="status">
       <h3>${esc(title)}</h3>
       ${body ? `<p>${esc(body)}</p>` : ''}
       ${action}
@@ -83,7 +86,7 @@ export function renderError(node, error, { title = 'Could not load this panel' }
     ? `<pre>${esc(JSON.stringify(error.detail, null, 2))}</pre>`
     : '';
   node.innerHTML = `
-    <div class="state error">
+    <div class="state error" role="alert">
       <h3>${esc(error?.isOffline ? 'API unreachable' : title)}</h3>
       <p>${esc(error?.message || 'Unknown error')}</p>
       ${error?.code ? `<p class="small dim mono">${esc(error.code)}${error.requestId ? ` · request ${esc(error.requestId)}` : ''}</p>` : ''}
@@ -154,8 +157,11 @@ export function renderConfidence(report) {
       <div class="row">
         ${modeBadge}
         <div class="confidence">
-          <div class="confidence-bar"><div class="confidence-fill ${band}" style="width:${pct}%"></div></div>
-          <span class="mono tabular small">${pct}%</span>
+          <div class="confidence-bar" role="meter" aria-valuenow="${pct}" aria-valuemin="0"
+               aria-valuemax="100" aria-label="Confidence ${pct} percent, ${band} band">
+            <div class="confidence-fill ${band}" style="width:${pct}%"></div>
+          </div>
+          <span class="mono tabular small" aria-hidden="true">${pct}%</span>
         </div>
       </div>
       <p class="small muted" style="margin:0">${esc(report.explanation || '')}</p>
@@ -189,9 +195,32 @@ export function fmtNumber(value, digits = 0) {
 
 export function tagChip(tag, { link = true } = {}) {
   if (!tag) return '<span class="dim">—</span>';
-  const cls = link ? 'tag is-link' : 'tag';
-  const href = link ? ` data-asset="${esc(tag)}"` : '';
-  return `<span class="${cls}"${href}>${esc(tag)}</span>`;
+  if (!link) return `<span class="tag">${esc(tag)}</span>`;
+  // A clickable span is invisible to the keyboard and to assistive tech unless
+  // it is given the role and the tab stop explicitly. wireAssetLinks() supplies
+  // the Enter/Space handling that a real <a> would get for free.
+  return `<span class="tag is-link" role="link" tabindex="0" data-asset="${esc(tag)}"
+    aria-label="Open ${esc(tag)} in the knowledge graph">${esc(tag)}</span>`;
+}
+
+/**
+ * Revision standing of a cited document.
+ *
+ * The most dangerous thing this system can do is show a technician a procedure
+ * from a superseded revision and give them no way to notice. The source viewer
+ * has always warned once the document is open; this puts it on the citation row
+ * itself, so the warning arrives before the click rather than after it.
+ *
+ * Silent when the document is current and unversioned — a badge on everything
+ * is a badge on nothing.
+ */
+export function revisionChip({ is_current: isCurrent, revision } = {}) {
+  if (isCurrent === false) {
+    return `<span class="badge danger no-dot"
+      title="This passage comes from a superseded revision. Do not work to it.">superseded${
+      revision ? ` rev ${esc(revision)}` : ''}</span>`;
+  }
+  return revision ? `<span class="badge neutral no-dot">rev ${esc(revision)}</span>` : '';
 }
 
 /** Render the doc-type chip. */
@@ -217,6 +246,11 @@ const NAV = [
 export function mountHeader(current) {
   const header = document.querySelector('[data-app-header]');
   if (!header) return;
+  // Keyboard users would otherwise tab through eight nav links on every page.
+  if (!document.querySelector('.skip-link')) {
+    const skip = el('<a class="skip-link" href="#main">Skip to main content</a>');
+    document.body.insertBefore(skip, document.body.firstChild);
+  }
   header.innerHTML = `
     <div class="brand">
       <div class="brand-mark">AB</div>
@@ -229,7 +263,8 @@ export function mountHeader(current) {
       ${NAV.map(([href, label]) =>
         `<a href="${href}"${href === current ? ' aria-current="page"' : ''}>${esc(label)}</a>`).join('')}
     </nav>
-    <div class="header-status" data-system-status>
+    <div class="header-status" data-system-status role="status" aria-live="polite"
+         aria-label="System status">
       <span class="badge neutral">Checking…</span>
     </div>`;
 }
@@ -260,10 +295,19 @@ export async function mountSystemStatus(api) {
 
 /** Delegate clicks on asset chips to the graph explorer. */
 export function wireAssetLinks(root = document) {
+  const open = (chip) => {
+    window.location.href = `graph.html?asset=${encodeURIComponent(chip.dataset.asset)}`;
+  };
   root.addEventListener('click', (event) => {
     const chip = event.target.closest('[data-asset]');
+    if (chip) open(chip);
+  });
+  root.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    const chip = event.target.closest?.('[data-asset][role="link"]');
     if (!chip) return;
-    window.location.href = `graph.html?asset=${encodeURIComponent(chip.dataset.asset)}`;
+    event.preventDefault();   // Space would otherwise scroll the page
+    open(chip);
   });
 }
 

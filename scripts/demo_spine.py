@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import sys
 from pathlib import Path
 
@@ -26,6 +27,16 @@ sys.path.insert(0, str(REPO_ROOT))
 import httpx  # noqa: E402
 
 BASE = "http://127.0.0.1:8000/api/v1"
+
+# This script is documented as running inside the container, where stdout is
+# UTF-8. It is also the thing a presenter reaches for on their own machine, and
+# on a Windows console stdout defaults to cp1252 -- where the box-drawing rules
+# below raise UnicodeEncodeError and take the demo down before the first figure
+# is printed. Reconfigure where the stream supports it; fall back to replacement
+# characters rather than a traceback where it does not.
+if hasattr(sys.stdout, "reconfigure"):
+    with contextlib.suppress(ValueError, OSError):  # a stream without an encoding
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 
 def rule(title: str) -> None:
@@ -51,7 +62,10 @@ async def main(asset: str, question: str) -> int:
         bullet("documents in corpus", docs["total"])
         bullet("current revisions", sum(1 for d in docs["items"] if d["is_current"]))
         bullet("superseded", sum(1 for d in docs["items"] if not d["is_current"]))
-        bullet(f"{asset} mentions / documents", f"{target['mention_count']} / {target['document_count']}")
+        bullet(
+            f"{asset} mentions / documents",
+            f"{target['mention_count']} / {target['document_count']}",
+        )
         bullet("source systems", target["source_system_count"])
 
         # --- 2. graph ---------------------------------------------------------
@@ -129,9 +143,7 @@ async def main(asset: str, question: str) -> int:
         # --- 6. lessons learned -----------------------------------------------
         rule("6. LESSONS LEARNED — has this happened before?")
         lessons = (
-            await client.post(
-                f"{BASE}/lessons", json={"description": question, "asset_tag": asset}
-            )
+            await client.post(f"{BASE}/lessons", json={"description": question, "asset_tag": asset})
         ).json()
         bullet("incidents compared", lessons["incidents_considered"])
         bullet("semantic matching", lessons["semantic_matching"]["state"])

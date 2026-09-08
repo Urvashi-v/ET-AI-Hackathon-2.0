@@ -24,19 +24,20 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 from typing import Any
 
+from services.agents import proactive
 from services.common import bus, db
 from services.common.ids import chunk_id as make_chunk_id
 from services.common.ids import document_id as make_document_id
 from services.common.ids import mention_id as make_mention_id
 from services.common.logging import get_logger
 from services.common.schemas import CapabilityState, DataClass, DocumentType
-from services.agents import proactive
 from services.ingest import (
     graph_writer,
     pid,
@@ -1308,7 +1309,11 @@ async def _digitise_drawing(
         log.error("pid.blob_unresolvable", doc_id=doc_id, error=str(exc))
         return None
 
-    totals = {"detections": 0, "linked": 0, "connections": 0, "unlinked": set()}
+    # Split rather than one dict: mixing counters and a set gives the dict a
+    # value type of `object`, and every arithmetic and set operation below then
+    # has to be either cast or ignored.
+    totals: dict[str, int] = {"detections": 0, "linked": 0, "connections": 0}
+    unlinked: set[str] = set()
     errors: list[str] = []
 
     for page in range(1, max(1, pages) + 1):
@@ -1318,7 +1323,7 @@ async def _digitise_drawing(
             totals["detections"] += written["detections"]
             totals["linked"] += written["linked_assets"]
             totals["connections"] += written["connections"]
-            totals["unlinked"].update(written["unlinked_tags"])
+            unlinked.update(written["unlinked_tags"])
         except Exception as exc:
             errors.append(f"page {page}: {type(exc).__name__}")
             log.error("pid.page_failed", doc_id=doc_id, page=page, error=str(exc))
@@ -1328,11 +1333,11 @@ async def _digitise_drawing(
         f"{totals['linked']} linked to canonical assets; "
         f"{totals['connections']} connection(s) recovered"
     )
-    if totals["unlinked"]:
+    if unlinked:
         # Named, not buried. A tag drawn on the sheet that the corpus has never
         # ingested is the gap between what the plant has drawn and what it has
         # recorded, and it is one of the more useful things this finds.
-        detail += f". Tags with no matching asset: {', '.join(sorted(totals['unlinked']))}"
+        detail += f". Tags with no matching asset: {', '.join(sorted(unlinked))}"
     if errors:
         detail += f". Failed: {'; '.join(errors)}"
 
@@ -1445,21 +1450,56 @@ def _derive_title(metadata: dict[str, Any], filename: str) -> str:
     return Path(filename).stem.replace("_", " ").replace("-", " ").strip()[:300] or filename
 
 
-_REVISION_MARKERS = ("revision", "rev.", "rev ", "issue ")
+#: A document's own revision is stated as a *field* in its header block --
+#: "Revision: 4", "Rev. 3", "| Issue | 2 |". A reference to some *other*
+#: document's revision appears mid-sentence: "the startup procedure had been
+#: revised to SOP-4412 revision 3", "SOP-4412 | Review discharge pressure limit |
+#: DONE in revision 3".
+#:
+#: The earlier version searched the whole head text for the first occurrence of
+#: the word and took the number after it, so every incident report that mentioned
+#: the SOP it was about inherited that SOP's revision number. Two incident
+#: reports and one MOC in the current corpus carried a revision they do not have,
+#: and the revision machinery treats that field as ordering evidence -- so the
+#: consequence was not cosmetic: documents can be declared superseded on the
+#: strength of a number that belongs to a different document.
+#:
+#: Anchoring to the start of a line is what separates the two, and it is
+#: deterministic: no model, no threshold. Markdown and table decoration may
+#: precede it, nothing else may.
+_REVISION_FIELD = re.compile(
+    r"""
+    (?:
+        # (a) a labelled field: the colon is what makes it this document's own
+        #     metadata rather than a mention of someone else's revision.
+        (?i:rev(?:ision)?|issue) [ \t]* : [ \t]*
+        (?P<labelled> \d{1,3}[A-Z]? | [A-Z] )
+        (?![^\s|])                       # not the head of a longer token
+      |
+        # (b) the field occupies its own line, with nothing else on it.
+        ^[ \t]* [|>#*-]{0,3} [ \t]*
+        (?i:rev(?:ision)?|issue) \.? [ \t]* [:|#]? [ \t]*
+        (?P<alone> \d{1,3}[A-Z]? | [A-Z] )
+        [ \t]* \|? [ \t]* $
+    )
+""",
+    re.MULTILINE | re.VERBOSE,
+)
+
+#: Only the header block is considered. A revision field that appears three pages
+#: in is a reference to something else, whatever it looks like.
+_REVISION_HEADER_CHARS = 1200
 
 
 def _derive_revision(head_text: str) -> str | None:
-    import re
+    """The revision printed on *this* document, or None.
 
-    for marker in _REVISION_MARKERS:
-        idx = head_text.lower().find(marker)
-        if idx == -1:
-            continue
-        window = head_text[idx : idx + 40]
-        match = re.search(r"(?:rev(?:ision)?|issue)\.?\s*[:#]?\s*([A-Z0-9]{1,4})", window, re.I)
-        if match:
-            return match.group(1)
-    return None
+    None is the correct answer for most documents. An incident report does not
+    have a revision, and inventing one for it is worse than leaving the column
+    empty -- `order_revisions` uses this field as ordering evidence.
+    """
+    match = _REVISION_FIELD.search(head_text[:_REVISION_HEADER_CHARS])
+    return (match.group("labelled") or match.group("alone")) if match else None
 
 
 def _derive_issue_date(head_text: str) -> date | None:

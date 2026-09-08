@@ -46,7 +46,13 @@ class TestFileUploadValidation:
         """
         response = client.post(
             "/api/v1/ingest",
-            files={"files": ("innocent.pdf", io.BytesIO(b"MZ\x90\x00not a pdf at all"), "application/pdf")},
+            files={
+                "files": (
+                    "innocent.pdf",
+                    io.BytesIO(b"MZ\x90\x00not a pdf at all"),
+                    "application/pdf",
+                )
+            },
             data={"data_class": "synthetic_test_data", "source_system": "test"},
         )
         assert response.status_code in (200, 202, 400)
@@ -127,7 +133,7 @@ class TestErrorLeakage:
         response = client.get("/api/v1/documents/definitely-not-a-document/page/99.png")
         assert response.status_code >= 400
         body = response.text.lower()
-        for leak in ("traceback", "file \"/app", "psycopg", "neo4j.exceptions", "site-packages"):
+        for leak in ("traceback", 'file "/app', "psycopg", "neo4j.exceptions", "site-packages"):
             assert leak not in body, f"error response leaked {leak!r}"
 
     def test_validation_errors_do_not_echo_submitted_values(self, client) -> None:
@@ -178,14 +184,23 @@ class TestSecretsAndConfiguration:
         patterns = [
             (re.compile(r"sk-[A-Za-z0-9]{16,}"), "OpenAI-style key"),
             (re.compile(r"sk-ant-[A-Za-z0-9-]{16,}"), "Anthropic key"),
-            (re.compile(r"""(?i)\b(api[_-]?key|secret|password|token)\s*[:=]\s*['"][^'"]{8,}"""),
-             "assigned credential"),
-            (re.compile(r"(?i)(postgresql|postgres|bolt|redis)://[^\s'\"]*:[^\s'\"]*@"),
-             "connection string with credentials"),
+            (
+                re.compile(r"""(?i)\b(api[_-]?key|secret|password|token)\s*[:=]\s*['"][^'"]{8,}"""),
+                "assigned credential",
+            ),
+            (
+                re.compile(r"(?i)(postgresql|postgres|bolt|redis)://[^\s'\"]*:[^\s'\"]*@"),
+                "connection string with credentials",
+            ),
         ]
         for page in (
-            "index.html", "field.html", "copilot.html", "graph.html",
-            "ingestion.html", "reliability.html", "compliance.html",
+            "index.html",
+            "field.html",
+            "copilot.html",
+            "graph.html",
+            "ingestion.html",
+            "reliability.html",
+            "compliance.html",
         ):
             text = client.get(f"/ui/{page}").text
             for pattern, label in patterns:

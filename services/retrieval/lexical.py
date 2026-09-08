@@ -42,11 +42,60 @@ log = get_logger(__name__)
 #: Deliberately short. Aggressive stopword removal hurts a technical corpus:
 #: "no", "not" and "before" carry real meaning in a procedure.
 _STOPWORDS = frozenset(
-    """
-    a an the and or of to in on at for from with by as is are was were be been being
-    this that these those it its into than then there their they them we you your
-    i he she his her which who whom whose what when where why how
-    """.split()
+    [
+        "a",
+        "an",
+        "the",
+        "and",
+        "or",
+        "of",
+        "to",
+        "in",
+        "on",
+        "at",
+        "for",
+        "from",
+        "with",
+        "by",
+        "as",
+        "is",
+        "are",
+        "was",
+        "were",
+        "be",
+        "been",
+        "being",
+        "this",
+        "that",
+        "these",
+        "those",
+        "it",
+        "its",
+        "into",
+        "than",
+        "then",
+        "there",
+        "their",
+        "they",
+        "them",
+        "we",
+        "you",
+        "your",
+        "i",
+        "he",
+        "she",
+        "his",
+        "her",
+        "which",
+        "who",
+        "whom",
+        "whose",
+        "what",
+        "when",
+        "where",
+        "why",
+        "how",
+    ]
 )
 
 _TOKEN_SPLIT = re.compile(r"[^A-Za-z0-9\"'’\-‐-―_/.]+")
@@ -289,7 +338,7 @@ async def document_frequencies(terms: list[str]) -> dict[str, int]:
         return {}
     rows = await db.fetch_all(
         "SELECT term, count(*)::int AS df FROM chunk_terms WHERE term = ANY(%s) GROUP BY term",
-        (list({t for t in terms}),),
+        (list(set(terms)),),
     )
     found = {row["term"]: int(row["df"]) for row in rows}
     return {term: found.get(term, 0) for term in terms}

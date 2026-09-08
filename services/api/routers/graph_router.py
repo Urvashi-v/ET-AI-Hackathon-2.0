@@ -38,7 +38,7 @@ async def schema() -> dict[str, Any]:
         "RETURN relationshipType ORDER BY relationshipType"
     )
     counts = await graph.read(
-        "MATCH (n) UNWIND labels(n) AS label " "RETURN label, count(*) AS n ORDER BY n DESC"
+        "MATCH (n) UNWIND labels(n) AS label RETURN label, count(*) AS n ORDER BY n DESC"
     )
     rel_counts = await graph.read(
         "MATCH ()-[r]->() RETURN type(r) AS type, count(*) AS n ORDER BY n DESC"

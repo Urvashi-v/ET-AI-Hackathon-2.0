@@ -1,0 +1,39 @@
+MIT License
+
+Copyright (c) 2026 Urvashi Verma
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+NOTES ON CONTENT, WHICH THE LICENCE ABOVE DOES NOT OVERRIDE
+
+1. Regulatory requirements. The entries in
+   data/requirements/atomised_requirements.json are plain-English restatements
+   written for this project, based on the published structure of the instruments
+   they cite. They are marked `paraphrase_for_demo`. No text of any standard is
+   reproduced here, and nothing in this repository is fit for use in an audit.
+
+2. Third-party models. The system downloads and runs BAAI/bge-small-en-v1.5 and
+   Xenova/ms-marco-MiniLM-L-6-v2 at run time. Those models carry their own
+   licences from their publishers; neither is redistributed by this repository.
+
+3. Real source documents. data/corpus/ ships empty and is gitignored. Any
+   document placed there remains under whatever licence it arrived with, and
+   this licence says nothing about it.

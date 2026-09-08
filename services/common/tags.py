@@ -28,7 +28,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 
 from rapidfuzz.distance import JaroWinkler
 
@@ -171,7 +171,7 @@ _KKS_PATTERN = re.compile(
 )
 
 
-class TagKind(str, Enum):
+class TagKind(StrEnum):
     EQUIPMENT = "equipment"
     INSTRUMENT = "instrument"
     LINE = "line"
@@ -179,7 +179,7 @@ class TagKind(str, Enum):
     UNPARSED = "unparsed"
 
 
-class TagRelation(str, Enum):
+class TagRelation(StrEnum):
     """How two tag strings relate. Drives what the graph writer does."""
 
     SAME = "same"  # merge into one canonical asset

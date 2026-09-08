@@ -317,7 +317,12 @@ async def _resolve_asset(tags: list[str]) -> str | None:
 def _evidence_chunks(record: IncidentRecord) -> list[str]:
     chunks = [
         f.chunk_id
-        for f in (record.narrative, record.immediate_cause, record.root_cause, record.recurrence_note)
+        for f in (
+            record.narrative,
+            record.immediate_cause,
+            record.root_cause,
+            record.recurrence_note,
+        )
         if f is not None
     ]
     chunks.extend(a.chunk_id for a in record.corrective_actions)

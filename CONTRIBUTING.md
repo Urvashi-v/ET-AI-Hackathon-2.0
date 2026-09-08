@@ -1,0 +1,137 @@
+# Contributing
+
+The rules below are not style preferences. Each one exists because breaking it
+produces a system that looks like it works.
+
+## The one rule
+
+**Nothing may be displayed that did not come from the database, an ingested
+document, a real API response, a real model inference, or a deterministic
+computation over those.**
+
+No hard-coded answers. No seeded KPIs. No sample responses for the demo. No
+`Math.random()` standing in for data. No silent fallback to a fabricated value
+when a provider is missing. If a stage cannot run, it says so and names the
+environment variables that would let it run — and the UI renders that as a
+first-class state, not as an error and never as a blank panel.
+
+The reason is specific to this domain. A dashboard that invents a plausible
+number is not a broken dashboard; it is a working dashboard that is lying, and
+in a plant someone acts on it.
+
+Test fixtures are the one exception, and only inside `tests/` and clearly named
+fixture directories.
+
+## Before you open a pull request
+
+```bash
+python -m ruff check services eval tests data scripts
+python -m ruff format --check services eval tests data scripts
+python -m mypy services
+docker compose exec api python -m pytest tests -q
+python scripts/gen_api_docs.py --check
+```
+
+For anything touching ingestion, retrieval or the graph, also run the clean-room
+test. It destroys the volumes first, so it cannot pass on leftover state:
+
+```bash
+./scripts/clean_start_test.sh
+```
+
+CI runs the first four on every push, plus the full stack and the evaluation
+harness.
+
+## Things that will be sent back
+
+**A number in the README that nothing produced.** Every figure there comes from
+`eval/run_eval.py` or from a documented count. If you change behaviour that moves
+a metric, re-run the harness and update the number with its run tag. If something
+has not been measured, write "Not measured" — never a plausible value.
+
+**A new metric without its counterweight.** Abstention recall means nothing
+without false-abstention rate; entity recall means nothing without precision.
+Metrics that can be gamed by a degenerate strategy ship in pairs.
+
+**Tuning a classifier to its own benchmark.** If the intent router misses a
+question, do not add that question's wording to the rules. Fix the rule or
+report the miss.
+
+**Merging entities on string similarity.** `P-101A` and `P-101B` are one
+character apart and are different pumps. The resolver's decision is four-way —
+merge, link as sibling, flag for review, separate — and the ambiguous middle
+band goes to a human. Changes to `services/common/tags.py` need a test that
+pins the sibling case.
+
+**A citation that cannot be opened.** Anything that adds a citation must make it
+resolve to a document, a page and a span. `eval/run_eval.py` re-fetches every
+citation and verifies the snippet; a change that breaks that will fail there.
+
+**An answer path that can produce text not present in a cited passage.** The
+extractive composer assembles answers from verbatim spans on purpose. If you add
+generation, the verification step stays.
+
+## Conventions
+
+**Python.** 3.12, `from __future__ import annotations`, type hints on public
+functions, 100-column lines, ruff for lint and format, mypy clean over
+`services/`. Structured logging via `services.common.logging` — never `print`,
+never f-strings in log messages, never a secret in a log field.
+
+**Errors.** Raise the typed errors in `services/common/errors.py`. They map to
+one response envelope; a handler that invents its own shape breaks every client.
+
+**SQL.** Migrations are numbered, forward-only and idempotent. Never edit a
+migration that has been applied — add another.
+
+**Cypher.** Every write is a `MERGE` on a natural key. Every asserted fact
+carries its source document, page, extraction method, confidence and assertion
+timestamp. A write that drops provenance will be rejected.
+
+**Frontend.** Vanilla HTML5, CSS3 and ES modules. No React, no build step, no
+component library, no CDN framework. One HTML file per surface, shared
+primitives in `web/js/ui.js`. Every displayed operational value carries a
+provenance badge from the API's `data_class` — never inferred client-side.
+
+**Line endings.** LF, enforced by `.gitattributes`. Document ids are SHA-256 over
+file bytes, so a newline translation changes identity and silently duplicates a
+corpus. This has already happened once.
+
+**Comments** explain why, not what. A comment that restates the line above it is
+noise; a comment that records the failure a piece of code exists to prevent is
+the most valuable thing in the file.
+
+## Adding documents
+
+Real industrial documents go in `data/corpus/`, which is gitignored — most are
+licensed or contain personal data. Read
+[`data/corpus/SOURCES.md`](data/corpus/SOURCES.md) first: it names legally usable
+sources per class and the provenance a manifest entry must record.
+
+Synthetic data goes in `data/synthetic/`, must be generated by
+`generate.py` from an explicit plant model, must be deterministic under its seed
+(CI generates twice and diffs), and must carry a `SYNTHETIC TEST DATA` banner in
+its own content.
+
+## Adding requirements
+
+`data/requirements/atomised_requirements.json`. Read
+[`data/requirements/README.md`](data/requirements/README.md) before adding
+anything. Every entry needs a `text_status`:
+
+* `verbatim` — reproduced exactly from a publicly available source, with the
+  source and retrieval date in `provenance_note`. **Do not add paywalled
+  standard text.**
+* `paraphrase_for_demo` — a restatement written for this project. May not be
+  used to assert a regulatory position, and the API reports the count so a
+  coverage figure built on paraphrase is visibly one.
+
+Also pick the right `testable_by` mode. If a machine cannot decide the
+obligation from stored evidence, say so — `not_evaluable` is a correct answer and
+guessing is not.
+
+## Reporting a problem
+
+The most useful bug report here names what the system claimed and what the
+underlying data actually says. Include the `x-request-id` from the response
+header: it appears on every log line for that request.

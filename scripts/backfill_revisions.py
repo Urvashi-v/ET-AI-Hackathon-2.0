@@ -73,8 +73,7 @@ async def backfill(*, dry_run: bool) -> int:
         return 0
 
     numbers = await db.fetch_all(
-        "SELECT DISTINCT doc_number FROM documents WHERE doc_number IS NOT NULL "
-        "ORDER BY doc_number"
+        "SELECT DISTINCT doc_number FROM documents WHERE doc_number IS NOT NULL ORDER BY doc_number"
     )
     print(f"\nReconciling {len(numbers)} document series…\n")
     conflicts = 0

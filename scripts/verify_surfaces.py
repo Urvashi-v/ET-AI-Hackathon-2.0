@@ -50,7 +50,6 @@ class Checks:
 async def main(asset: str) -> int:
     checks = Checks()
     async with httpx.AsyncClient(timeout=120) as client:
-
         # --- the shared facts every surface must agree on -------------------
         print("\n\033[36mShared backend state\033[0m")
         assets = (await client.get(f"{API}/assets", params={"limit": 300})).json()
@@ -68,13 +67,18 @@ async def main(asset: str) -> int:
         # --- every page is served -------------------------------------------
         print("\n\033[36m1. Pages served from the same origin as the API\033[0m")
         for page in (
-            "index.html", "field.html", "copilot.html", "graph.html",
-            "ingestion.html", "reliability.html", "compliance.html",
+            "index.html",
+            "field.html",
+            "copilot.html",
+            "graph.html",
+            "ingestion.html",
+            "reliability.html",
+            "compliance.html",
         ):
             response = await client.get(f"{BASE}/ui/{page}")
             checks.check(
                 page,
-                response.status_code == 200 and "<script type=\"module\">" in response.text,
+                response.status_code == 200 and '<script type="module">' in response.text,
                 f"{response.status_code}, no CORS shim, same origin",
             )
 
@@ -91,16 +95,16 @@ async def main(asset: str) -> int:
         )
         checks.check(
             "resolves the same asset the graph knows",
-            any(e.get("canonical_tag", "").upper() == asset.upper()
-                for e in answer["resolved_entities"]),
+            any(
+                e.get("canonical_tag", "").upper() == asset.upper()
+                for e in answer["resolved_entities"]
+            ),
             asset,
         )
 
         # --- graph explorer ---------------------------------------------------
         print("\n\033[36m3. Graph explorer\033[0m")
-        neighbourhood = (
-            await client.get(f"{API}/graph/{asset_id}", params={"hops": 2})
-        ).json()
+        neighbourhood = (await client.get(f"{API}/graph/{asset_id}", params={"hops": 2})).json()
         checks.check(
             "resolves the same asset_id the asset list gave",
             neighbourhood["anchor_found"],
@@ -120,7 +124,9 @@ async def main(asset: str) -> int:
         # --- ingestion --------------------------------------------------------
         print("\n\033[36m4. Ingestion dashboard\033[0m")
         jobs = (await client.get(f"{API}/ingest", params={"limit": 5})).json()
-        checks.check("reads real ingestion jobs", "items" in jobs, f"{len(jobs.get('items', []))} job(s)")
+        checks.check(
+            "reads real ingestion jobs", "items" in jobs, f"{len(jobs.get('items', []))} job(s)"
+        )
         checks.check(
             "graph growth chart reads the same Neo4j the explorer does",
             graph_total > 0,
@@ -146,8 +152,7 @@ async def main(asset: str) -> int:
             page_image = await client.get(f"{BASE}{first['page_image']}")
             checks.check(
                 "the page image renders from the stored original",
-                page_image.status_code == 200
-                and page_image.headers["content-type"] == "image/png",
+                page_image.status_code == 200 and page_image.headers["content-type"] == "image/png",
                 f"{len(page_image.content) // 1024} kB PNG",
             )
             detections = (

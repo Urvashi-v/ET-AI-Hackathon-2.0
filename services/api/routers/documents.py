@@ -25,7 +25,7 @@ from __future__ import annotations
 import io
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query, Response
+from fastapi import APIRouter, HTTPException, Path, Query, Response
 from fastapi.responses import FileResponse
 
 from services.common import db
@@ -179,7 +179,10 @@ async def get_chunk(doc_id: str, chunk_id: str) -> dict[str, Any]:
 
 
 @router.get("/{doc_id}/page/{page}.png", summary="Rendered source page")
-async def render_page(doc_id: str, page: int) -> Response:
+async def render_page(
+    doc_id: str,
+    page: int = Path(ge=1, description="1-based page number"),
+) -> Response:
     """Render one PDF page to PNG, straight from the stored original.
 
     Rendered on demand rather than at ingest: page images are large, most are

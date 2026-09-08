@@ -73,14 +73,16 @@
 </head>
 <body>
   <div class="field-shell">
-    <div class="field-head">
+    <header class="field-head">
       <div class="brand-mark">AB</div>
       <div style="flex:1">
         <div style="font-weight:650">Field assistant</div>
         <div class="small dim">Point of need · <span data-role>field technician</span></div>
       </div>
       <a class="btn small" href="index.html">Desk view</a>
-    </div>
+    </header>
+
+    <main id="main" tabindex="-1">
 
     <!-- Connectivity and cache scope. Stated, not implied: a technician needs to
          know whether what they are reading came from the plant or from their
@@ -136,9 +138,10 @@
     </section>
 
     <section data-result></section>
+    </main>
   </div>
 
-  <div class="sticky-ask">
+  <div class="sticky-ask" role="search" aria-label="Ask about this asset">
     <form data-ask>
       <input class="big-input" type="text" name="question" required
              placeholder="Ask about this asset…" autocomplete="off">
@@ -157,7 +160,7 @@
     import { DrawingViewer } from './js/drawingviewer.js';
     import {
       esc, provBadge, renderError, renderEmpty, renderCapability,
-      confidenceBand, fmtDate, tagChip, qs,
+      confidenceBand, fmtDate, tagChip, qs, revisionChip,
     } from './js/ui.js';
 
     const $ = (sel) => document.querySelector(sel);
@@ -331,6 +334,7 @@
                   <div class="row tight">
                     <span class="badge neutral no-dot mono">${esc(c.marker)}</span>
                     <strong style="font-size:0.92rem">${esc(c.doc_title)}</strong>
+                    ${revisionChip(c)}
                   </div>
                   <div class="row tight small dim" style="margin-top:4px">
                     ${provBadge(c.data_class)}

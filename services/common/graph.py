@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from neo4j import AsyncDriver, AsyncGraphDatabase, NotificationCategory
+from neo4j import AsyncDriver, AsyncGraphDatabase, NotificationDisabledCategory
 from neo4j.exceptions import Neo4jError, ServiceUnavailable
 
 from services.common.config import get_settings
@@ -41,7 +41,7 @@ async def open_driver() -> AsyncDriver:
         # corpus, not a defect in the query -- so the server emits one warning per
         # unused type per query. Left on, it buries real warnings under noise,
         # which is the failure mode that matters. Every other category still logs.
-        notifications_disabled_categories=[NotificationCategory.UNRECOGNIZED],
+        notifications_disabled_categories=[NotificationDisabledCategory.UNRECOGNIZED],
     )
     await _driver.verify_connectivity()
     log.info("neo4j.driver_opened", uri=settings.neo4j_uri, database=settings.neo4j_database)
@@ -184,7 +184,7 @@ def _summarise(stmt: str) -> str:
 async def ping() -> dict[str, Any]:
     """Health probe reporting real counts, not a hard-coded 'ok'."""
     try:
-        rows = await read("CALL db.labels() YIELD label " "RETURN collect(label) AS labels")
+        rows = await read("CALL db.labels() YIELD label RETURN collect(label) AS labels")
         labels = rows[0]["labels"] if rows else []
         counts = await read(
             "MATCH (n) WITH count(n) AS nodes "

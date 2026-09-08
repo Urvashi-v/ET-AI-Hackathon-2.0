@@ -70,9 +70,7 @@ RETURN count(r) AS links
 """
 
 
-async def write(
-    result: PidResult, *, doc_id: str, data_class: DataClass
-) -> dict[str, Any]:
+async def write(result: PidResult, *, doc_id: str, data_class: DataClass) -> dict[str, Any]:
     """Store every detection, resolve tags to assets, and link the graph."""
     # Re-running the pipeline replaces this page's detections rather than
     # accumulating them. Detector parameters change; stale boxes from an older
@@ -157,8 +155,7 @@ async def write(
         "connections": connections_written,
         "graph_appearances": graph_links,
         "by_kind": {
-            kind: len(result.of_kind(kind))
-            for kind in ("tag", "instrument_bubble", "line_segment")
+            kind: len(result.of_kind(kind)) for kind in ("tag", "instrument_bubble", "line_segment")
         },
     }
 
@@ -168,9 +165,7 @@ async def _write_connections(
 ) -> int:
     written = 0
     for connection in result.connections:
-        if connection.from_index >= len(detection_ids) or connection.to_index >= len(
-            detection_ids
-        ):
+        if connection.from_index >= len(detection_ids) or connection.to_index >= len(detection_ids):
             continue
         from_id = detection_ids[connection.from_index]
         to_id = detection_ids[connection.to_index]

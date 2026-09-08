@@ -27,9 +27,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-from fastapi import APIRouter
-
-from fastapi import HTTPException
+from fastapi import APIRouter, HTTPException, Query
 
 from services.agents import compliance as compliance_agent
 from services.common import db
@@ -217,8 +215,12 @@ async def _control_coverage(req_ids: list[str]) -> dict[str, dict[str, Any]]:
 
 
 @router.get("/requirements", summary="Loaded requirements with their provenance")
-async def list_requirements(standard: str | None = None, limit: int = 200) -> dict[str, Any]:
-    limit = max(1, min(limit, 1000))
+async def list_requirements(
+    standard: str | None = Query(
+        None, max_length=120, description="Substring of the standard name"
+    ),
+    limit: int = Query(200, ge=1, le=1000),
+) -> dict[str, Any]:
     params: dict[str, Any] = {"limit": limit}
     where = ""
     if standard:

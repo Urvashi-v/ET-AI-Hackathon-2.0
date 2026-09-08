@@ -106,8 +106,11 @@ classifier to its own benchmark is how a benchmark stops meaning anything.
 
 Embeddings, generation, reranking and OCR are all capability-gated. With none
 configured the system still performs real query understanding, real BM25, real
-graph traversal, real fusion and real citation binding, and returns the evidence
-with `ABSTAIN_NO_ANSWER`.
+graph traversal, real fusion and real citation binding — and, since the
+extractive composer was added, still answers: from verbatim spans of the cited
+passages, which is why groundedness is a structural property here rather than a
+score to be defended. `ABSTAIN_NO_ANSWER` is the answer when the evidence is
+insufficient, not when a provider is missing.
 
 A random-vector fallback would produce plausible-looking neighbours and silently
 poison every retrieval metric. That failure is invisible, which is exactly why

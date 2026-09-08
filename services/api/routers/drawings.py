@@ -109,9 +109,7 @@ async def get_detections(
 
     # Page geometry is taken from a detection rather than recomputed, so the
     # overlay is scaled by exactly the frame the boxes were measured in.
-    geometry = next(
-        ({"width": r["page_width"], "height": r["page_height"]} for r in rows), None
-    )
+    geometry = next(({"width": r["page_width"], "height": r["page_height"]} for r in rows), None)
 
     return {
         "document": document,

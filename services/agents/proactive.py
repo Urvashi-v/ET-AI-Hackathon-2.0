@@ -212,12 +212,11 @@ async def _match_open_actions(asset_tag: str, ref_id: str | None) -> list[Candid
             severity="high",
             title=f"{len(actions)} open corrective action(s) already cover {asset_tag}",
             message=(
-                "; ".join(f"{a['capa_id']} ({a['owner'] or 'unassigned'}): {a['action']}" for a in actions[:3])
-                + (
-                    " — raised against identical equipment, not this asset."
-                    if sibling_only
-                    else ""
+                "; ".join(
+                    f"{a['capa_id']} ({a['owner'] or 'unassigned'}): {a['action']}"
+                    for a in actions[:3]
                 )
+                + (" — raised against identical equipment, not this asset." if sibling_only else "")
             ),
             reason=(
                 "Open CAPAs were found on this asset or its siblings via "

@@ -270,9 +270,8 @@ def _abstention_reason(
     difference between an abstention and a shrug.
     """
     if gate == "unknown_asset":
-        return (
-            "The asset named in the question is not present in the corpus: "
-            + ", ".join(inputs.anchors_missing)
+        return "The asset named in the question is not present in the corpus: " + ", ".join(
+            inputs.anchors_missing
         )
     if gate == "live_state_unavailable":
         return (

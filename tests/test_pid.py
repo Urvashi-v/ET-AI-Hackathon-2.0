@@ -51,14 +51,17 @@ class TestTagLocalisation:
         assert found[0].confidence == 1.0
 
     def test_joins_words_a_pdf_split_on_kerning(self) -> None:
-        """"P", "-", "101B" is one tag the extractor happened to emit as three.
+        """ "P", "-", "101B" is one tag the extractor happened to emit as three.
 
         PDF text extraction splits on typographic spacing, not on meaning. A
         detector that only parses single words misses most tags on a drawing,
         because drawings letter-space their tags.
         """
-        words = [word("P", 100, 200, width=8), word("-", 108, 200, width=4),
-                 word("101B", 112, 200, width=22)]
+        words = [
+            word("P", 100, 200, width=8),
+            word("-", 108, 200, width=4),
+            word("101B", 112, 200, width=22),
+        ]
         found = pid._detect_tags(words)
         assert "P-101B" in [d.normalised for d in found]
 
@@ -70,11 +73,15 @@ class TestTagLocalisation:
         """
         single = pid._detect_tags([word("P-101B", 100, 200)])[0]
         joined = [
-            d for d in pid._detect_tags([
-                word("P", 100, 200, width=8),
-                word("-", 108, 200, width=4),
-                word("101B", 112, 200, width=22),
-            ]) if d.normalised == "P-101B"
+            d
+            for d in pid._detect_tags(
+                [
+                    word("P", 100, 200, width=8),
+                    word("-", 108, 200, width=4),
+                    word("101B", 112, 200, width=22),
+                ]
+            )
+            if d.normalised == "P-101B"
         ][0]
         assert joined.confidence < single.confidence
 
@@ -93,9 +100,9 @@ class TestTagLocalisation:
         assert "P-101B" not in {d.normalised for d in pid._detect_tags(words)}
 
     def test_prose_is_not_read_as_tags(self) -> None:
-        found = pid._detect_tags([
-            word("PIPING", 10, 10), word("AND", 60, 10), word("INSTRUMENTATION", 90, 10)
-        ])
+        found = pid._detect_tags(
+            [word("PIPING", 10, 10), word("AND", 60, 10), word("INSTRUMENTATION", 90, 10)]
+        )
         assert found == []
 
 
@@ -109,7 +116,13 @@ class TestBubbleNaming:
         """
         bubble = detection("instrument_bubble", 100, 100, 140, 140)
         tag = detection(
-            "tag", 108, 112, 132, 124, normalised="PIC-101", text="PIC-101",
+            "tag",
+            108,
+            112,
+            132,
+            124,
+            normalised="PIC-101",
+            text="PIC-101",
             properties={"tag_kind": "instrument"},
         )
         pid._name_bubbles([bubble], [tag])
@@ -125,11 +138,21 @@ class TestBubbleNaming:
     def test_instrument_tags_win_over_line_numbers(self) -> None:
         bubble = detection("instrument_bubble", 100, 100, 160, 160)
         line = detection(
-            "tag", 105, 105, 150, 115, normalised='8"-P-1501-A1A',
+            "tag",
+            105,
+            105,
+            150,
+            115,
+            normalised='8"-P-1501-A1A',
             properties={"tag_kind": "line"},
         )
         instrument = detection(
-            "tag", 110, 130, 150, 142, normalised="PIC-101",
+            "tag",
+            110,
+            130,
+            150,
+            142,
+            normalised="PIC-101",
             properties={"tag_kind": "instrument"},
         )
         pid._name_bubbles([bubble], [line, instrument])
@@ -144,19 +167,43 @@ class TestLineMerging:
         sheet, which is not 857 pipes.
         """
         edges = [
-            detection("line_segment", 100, 200, 400, 200,
-                      properties={"orientation": "horizontal", "length_px": 300}),
-            detection("line_segment", 100, 202, 400, 202,
-                      properties={"orientation": "horizontal", "length_px": 300}),
+            detection(
+                "line_segment",
+                100,
+                200,
+                400,
+                200,
+                properties={"orientation": "horizontal", "length_px": 300},
+            ),
+            detection(
+                "line_segment",
+                100,
+                202,
+                400,
+                202,
+                properties={"orientation": "horizontal", "length_px": 300},
+            ),
         ]
         assert len(pid._merge_duplicates(edges)) == 1
 
     def test_collinear_fragments_are_rejoined(self) -> None:
         fragments = [
-            detection("line_segment", 100, 200, 200, 200,
-                      properties={"orientation": "horizontal", "length_px": 100}),
-            detection("line_segment", 203, 200, 300, 200,
-                      properties={"orientation": "horizontal", "length_px": 97}),
+            detection(
+                "line_segment",
+                100,
+                200,
+                200,
+                200,
+                properties={"orientation": "horizontal", "length_px": 100},
+            ),
+            detection(
+                "line_segment",
+                203,
+                200,
+                300,
+                200,
+                properties={"orientation": "horizontal", "length_px": 97},
+            ),
         ]
         merged = pid._merge_duplicates(fragments)
         assert len(merged) == 1
@@ -170,19 +217,43 @@ class TestLineMerging:
         the gap — which on a P&ID is usually a valve.
         """
         segments = [
-            detection("line_segment", 100, 200, 200, 200,
-                      properties={"orientation": "horizontal", "length_px": 100}),
-            detection("line_segment", 260, 200, 360, 200,
-                      properties={"orientation": "horizontal", "length_px": 100}),
+            detection(
+                "line_segment",
+                100,
+                200,
+                200,
+                200,
+                properties={"orientation": "horizontal", "length_px": 100},
+            ),
+            detection(
+                "line_segment",
+                260,
+                200,
+                360,
+                200,
+                properties={"orientation": "horizontal", "length_px": 100},
+            ),
         ]
         assert len(pid._merge_duplicates(segments)) == 2
 
     def test_parallel_pipes_are_not_merged(self) -> None:
         segments = [
-            detection("line_segment", 100, 200, 400, 200,
-                      properties={"orientation": "horizontal", "length_px": 300}),
-            detection("line_segment", 100, 240, 400, 240,
-                      properties={"orientation": "horizontal", "length_px": 300}),
+            detection(
+                "line_segment",
+                100,
+                200,
+                400,
+                200,
+                properties={"orientation": "horizontal", "length_px": 300},
+            ),
+            detection(
+                "line_segment",
+                100,
+                240,
+                400,
+                240,
+                properties={"orientation": "horizontal", "length_px": 300},
+            ),
         ]
         assert len(pid._merge_duplicates(segments)) == 2
 
@@ -191,8 +262,9 @@ class TestTopology:
     def test_connects_symbols_a_segment_touches_at_both_ends(self) -> None:
         pump = detection("tag", 100, 100, 140, 112, normalised="P-101B")
         exchanger = detection("tag", 300, 100, 340, 112, normalised="E-104")
-        line = detection("line_segment", 140, 104, 300, 104,
-                         properties={"orientation": "horizontal"})
+        line = detection(
+            "line_segment", 140, 104, 300, 104, properties={"orientation": "horizontal"}
+        )
         connections = pid._connect([pump, exchanger], [line], symbol_offset=0, line_offset=2)
         assert len(connections) == 1
         assert {connections[0].from_index, connections[0].to_index} == {0, 1}
@@ -200,16 +272,18 @@ class TestTopology:
     def test_a_segment_touching_one_symbol_connects_nothing(self) -> None:
         """A line running off the edge of the sheet is not a connection."""
         pump = detection("tag", 100, 100, 140, 112, normalised="P-101B")
-        line = detection("line_segment", 140, 104, 600, 104,
-                         properties={"orientation": "horizontal"})
+        line = detection(
+            "line_segment", 140, 104, 600, 104, properties={"orientation": "horizontal"}
+        )
         assert pid._connect([pump], [line], symbol_offset=0, line_offset=1) == []
 
     def test_tolerance_is_bounded(self) -> None:
         """A line that stops well short of a symbol does not reach it."""
         pump = detection("tag", 100, 100, 140, 112, normalised="P-101B")
         exchanger = detection("tag", 300, 100, 340, 112, normalised="E-104")
-        short = detection("line_segment", 200, 104, 260, 104,
-                          properties={"orientation": "horizontal"})
+        short = detection(
+            "line_segment", 200, 104, 260, 104, properties={"orientation": "horizontal"}
+        )
         assert pid._connect([pump, exchanger], [short], symbol_offset=0, line_offset=2) == []
 
 

@@ -18,7 +18,6 @@ from services.agents import rca as rca_agent
 from services.agents.compliance import _RECORD_CONCEPTS, RequirementFinding, _add_months
 from services.ingest import records
 
-
 # ---------------------------------------------------------------------------
 # Record extraction
 # ---------------------------------------------------------------------------
@@ -160,7 +159,9 @@ class TestRCARanking:
     def test_ranks_the_mechanism_with_the_most_independent_evidence(self) -> None:
         analysis = rca_agent.analyse(
             asset_tag="P-101B",
-            incidents=[incident("INC-1", "ran without liquid film after startup", date(2022, 1, 1))],
+            incidents=[
+                incident("INC-1", "ran without liquid film after startup", date(2022, 1, 1))
+            ],
             work_orders=[
                 work_order("WO-1", "seal faces scored, evidence of dry running", date(2023, 1, 1)),
                 work_order("WO-2", "bearing wear noted", date(2021, 1, 1)),

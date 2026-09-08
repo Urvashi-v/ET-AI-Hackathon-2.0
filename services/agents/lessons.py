@@ -42,10 +42,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from services.agents.rca import _mechanisms_in
 from services.common import db
 from services.common.logging import get_logger
 from services.common.schemas import CapabilityState
-from services.agents.rca import _mechanisms_in
 from services.ingest.embeddings import _to_pgvector, embedding_capability, get_embedding_provider
 
 log = get_logger(__name__)

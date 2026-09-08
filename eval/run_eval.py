@@ -35,6 +35,7 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import statistics
 import sys
@@ -45,9 +46,24 @@ from typing import Any
 
 import httpx
 
-from eval import metrics
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+# Windows consoles default to cp1252, and these reports print box-drawing
+# characters, arrows and ellipses. Without this the run dies on a UnicodeEncodeError
+# after doing all the work -- which is how a benchmark ends up with no output.
+if hasattr(sys.stdout, "reconfigure"):
+    with contextlib.suppress(ValueError, OSError):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
+
+# `python eval/run_eval.py` puts eval/ on sys.path, not the repository root, so
+# the absolute import below fails unless PYTHONPATH happens to be set. The
+# README and docs give the bare command, so the command has to work.
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from eval import metrics  # noqa: E402
+
 GOLDEN = REPO_ROOT / "eval" / "golden.jsonl"
 RESULTS_DIR = REPO_ROOT / "eval" / "results"
 
@@ -253,18 +269,24 @@ def summarise(results: list[dict[str, Any]], system: dict[str, Any]) -> dict[str
             "false_abstention_rate": mean([float(r["abstained"]) for r in answerable]),
             "false_abstention_note": None,
         },
-        "answer_quality": (
-            {
-                "state": "not_measurable",
-                "reason": "No generation provider is configured, so no answers were produced. "
-                "Correctness is reported as not_measurable rather than as zero.",
-            }
-            if not generation_available
-            else {
-                "state": "measurable",
-                "answers_produced": sum(1 for r in answerable if r["answer_present"]),
-            }
-        ),
+        # Answers ARE produced without an LLM: the extractive composer assembles
+        # them from verbatim spans of the cited chunks, and this run measured 170
+        # such claims for groundedness. What is missing is a *judge* -- correctness
+        # is a comparison against a reference answer, and neither a human nor a
+        # capable model is configured to make it. The earlier wording here said
+        # "no answers were produced", which contradicted the groundedness block in
+        # the same file.
+        "answer_quality": {
+            "state": "not_measured",
+            "answers_produced": sum(1 for r in answerable if r["answer_present"]),
+            "generation_provider": "llm" if generation_available else "extractive_composer",
+            "reason": (
+                "Answers are produced, and their groundedness is measured. Correctness "
+                "is not: grading against a reference answer requires a judge (a human "
+                "or a capable LLM) and none is configured. Reported as not_measured "
+                "rather than as zero."
+            ),
+        },
         "latency": {
             "p50_s": percentile(latencies, 50),
             "p95_s": percentile(latencies, 95),
@@ -446,7 +468,9 @@ def print_report(summary: dict[str, Any], system: dict[str, Any], results: list[
     grounded = summary.get("groundedness", {})
     if grounded.get("state") == "measured":
         print("\nGroundedness")
-        print(f"  {'claims verbatim':22} {grounded['claims_verbatim']} / {grounded['claims_total']}")
+        print(
+            f"  {'claims verbatim':22} {grounded['claims_verbatim']} / {grounded['claims_total']}"
+        )
         print(f"  {'groundedness':22} {fmt(grounded['groundedness'])}")
         print(f"  {'answers with citations':22} {fmt(grounded['cited_answer_rate'])}")
         print(f"  {'answer correctness':22} {grounded['answer_correctness']['state']}")

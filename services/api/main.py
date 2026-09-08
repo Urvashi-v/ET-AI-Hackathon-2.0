@@ -23,6 +23,7 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from services.api.routers import (
     assets,
@@ -164,6 +165,46 @@ async def security_headers(request: Request, call_next):  # type: ignore[no-unty
 async def brain_error_handler(request: Request, exc: BrainError) -> JSONResponse:
     log.warning("http.application_error", code=exc.code, message=exc.message)
     return JSONResponse(status_code=exc.status_code, content=exc.to_payload())
+
+
+# HTTPException is FastAPI's own error type and Starlette renders it as
+# ``{"detail": ...}``. Everything else in this API answers with
+# ``{"error": {code, message, detail}}``, and the frontend client reads only
+# that shape -- so a 404 raised with HTTPException arrived in the browser as a
+# bare "Request failed with status 404" and the router's actual explanation
+# ("this document is Markdown and has no page images") was thrown away. One
+# envelope, so a client needs one branch.
+_STATUS_CODES = {
+    400: "validation_error",
+    401: "unauthorized",
+    403: "forbidden",
+    404: "not_found",
+    405: "method_not_allowed",
+    409: "conflict",
+    413: "payload_too_large",
+    415: "unsupported_media_type",
+    422: "validation_error",
+    429: "rate_limited",
+    503: "dependency_unavailable",
+}
+
+
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(request: Request, exc: StarletteHTTPException) -> JSONResponse:
+    detail = exc.detail
+    message = detail if isinstance(detail, str) else "The request could not be completed."
+    payload: dict[str, object] = {
+        "code": _STATUS_CODES.get(exc.status_code, "http_error"),
+        "message": message,
+        "detail": detail if isinstance(detail, dict) else {},
+    }
+    if exc.status_code >= 500:
+        log.error("http.server_error", status=exc.status_code, message=message)
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"error": payload},
+        headers=getattr(exc, "headers", None) or {},
+    )
 
 
 @app.exception_handler(RequestValidationError)

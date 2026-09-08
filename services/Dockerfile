@@ -21,6 +21,11 @@ RUN apt-get update \
 COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
+# pyproject.toml is copied for its [tool.pytest.ini_options] section, not to
+# install the project: without it, pytest inside the container does not know the
+# `integration` marker exists, warns on every run, and silently selects nothing
+# for `-m integration`. Tests are run in this image by scripts/clean_start_test.sh.
+COPY pyproject.toml /app/pyproject.toml
 COPY services /app/services
 COPY database /app/database
 COPY scripts /app/scripts

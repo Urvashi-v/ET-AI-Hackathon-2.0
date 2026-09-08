@@ -14,6 +14,7 @@ from datetime import date
 import pytest
 
 from services.common.schemas import DocumentType
+from services.ingest.pipeline import _derive_revision
 from services.ingest.revisions import derive_doc_number, order_revisions, revision_rank
 
 
@@ -48,9 +49,7 @@ class TestDeriveDocNumber:
         This is the whole mechanism: two revisions only group if their numbers
         canonicalise identically, so separator handling *is* the feature.
         """
-        found = derive_doc_number(
-            title=title, filename="", head_text="", doc_type=DocumentType.SOP
-        )
+        found = derive_doc_number(title=title, filename="", head_text="", doc_type=DocumentType.SOP)
         assert found is not None
         assert found.value == expected
 
@@ -201,7 +200,7 @@ class TestOrderRevisions:
         assert len(ordering.current) == 2
 
     def test_mixed_revision_schemes_do_not_order_by_label(self) -> None:
-        """"A" and "2" cannot be compared, so the label basis must not be used."""
+        """ "A" and "2" cannot be compared, so the label basis must not be used."""
         ordering = order_revisions([doc("a", revision="A"), doc("b", revision="2")])
         assert ordering.basis != "revision_label"
 
@@ -223,3 +222,90 @@ class TestOrderRevisions:
         assert [d["doc_id"] for d in forward.superseded] == [
             d["doc_id"] for d in backward.superseded
         ]
+
+
+class TestRevisionFieldExtraction:
+    """A document's revision is the one printed on it, not one it mentions.
+
+    The bug this pins down shipped for four days and was invisible until
+    citations started carrying revision standing: `_derive_revision` searched the
+    whole header for the first occurrence of the word "revision" and took the
+    number after it. Every incident report that referred to the SOP it was about
+    inherited that SOP's revision number.
+
+    That is not cosmetic. `order_revisions` treats the revision label as ordering
+    evidence, so a fabricated label can declare a real document superseded.
+    """
+
+    @pytest.mark.parametrize(
+        ("name", "head_text", "expected"),
+        [
+            (
+                "own header field",
+                "Document: SOP-4412\nRevision: 4\nEffective from: 2025-02-01\n",
+                "4",
+            ),
+            (
+                # pdfplumber collapses a header block onto a single line. The
+                # first version of this fix anchored to the start of a line and
+                # silently lost the revision of the one PDF SOP in the corpus;
+                # ordering fell back to effective dates and still reached the
+                # right answer, which is how a regression like that survives a
+                # test suite.
+                "a PDF header collapsed onto one line",
+                "SOP-4412 Crude Charge Pump Startup\n"
+                "Document: SOP-4412 Revision: 3 Effective from: 2024-03-01\n"
+                "Supersedes: SOP-4412 revision 2, effective 2018-06-01\n",
+                "3",
+            ),
+            ("a two-part label", "Revision: 2A\n", "2A"),
+            (
+                # The colon alone is not enough: the value has to look like a
+                # revision label, or "Revision: this document was superseded"
+                # parses as revision "this".
+                "a sentence after the colon",
+                "Revision: this document was superseded in 2024\n",
+                None,
+            ),
+            (
+                "a supersedes line names another revision",
+                "Document: SOP-4412\nSupersedes: SOP-4412 revision 3, effective 2024-03-01\n",
+                None,
+            ),
+            (
+                "prose reference wrapped onto its own line",
+                "The startup procedure had been revised to SOP-4412\n"
+                "revision 3 but still does not require confirmation of suction pressure\n",
+                None,
+            ),
+            (
+                "a table cell mentioning another document's revision",
+                "| SOP-4412 | Review discharge pressure limit | DONE in revision 3 |\n",
+                None,
+            ),
+            ("its own revision in a table", "| Revision | 4 |\n", "4"),
+            ("abbreviated with a full stop", "Rev. 3\n", "3"),
+            ("alphabetic scheme", "Revision: B\n", "B"),
+            ("issue rather than revision", "Issue 2\n", "2"),
+            (
+                "an incident report has no revision",
+                "Site: HALDIA   Plant: CDU-1\nDate of event: 2022-08-04\nSeverity: Moderate\n",
+                None,
+            ),
+        ],
+    )
+    def test_reads_only_its_own_revision_field(
+        self, name: str, head_text: str, expected: str | None
+    ) -> None:
+        assert _derive_revision(head_text) == expected, name
+
+    def test_a_reference_far_into_the_body_is_ignored(self) -> None:
+        # Even correctly formatted, a revision field two thousand characters in
+        # belongs to something quoted, not to this document.
+        head = "Site: HALDIA\n" + ("filler line\n" * 200) + "Revision: 9\n"
+        assert _derive_revision(head) is None
+
+    def test_no_revision_is_a_valid_answer(self) -> None:
+        # The counterpart to the ordering tests above: absent evidence must stay
+        # absent rather than become a guess.
+        assert _derive_revision("A work order with no version information.\n") is None

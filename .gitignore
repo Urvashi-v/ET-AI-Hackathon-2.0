@@ -30,11 +30,21 @@ data/uploads/
 data/blobs/
 
 # --- runtime artefacts ---
+# Evaluation runs are runtime artefacts and accumulate, so they are ignored by
+# default -- with one exception. The README and FINAL_BUILD_REPORT.md cite a
+# specific run by name for every number they report, and a citation to a file
+# that is not in the repository is not a citation. The two runs the docs quote
+# are committed so a reader can check the claims against the raw output.
 eval/results/*.json
 !eval/results/.gitkeep
+!eval/results/20260907T150201Z-day6-final.json
+!eval/results/20260908T195645Z-day7-final.json
 *.log
 .DS_Store
 Thumbs.db
 
 # --- docker volumes bind-mounted locally ---
 .volumes/
+
+# Chromium profile created by scripts/capture_screenshots.py
+.screenshot-profile/

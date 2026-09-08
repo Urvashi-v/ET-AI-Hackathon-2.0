@@ -356,9 +356,7 @@ async def reconcile(doc_number: str) -> dict[str, Any]:
         "chain": [
             {
                 "revision": level[0].get("revision"),
-                "documents": [
-                    {"doc_id": d["doc_id"], "title": d["title"]} for d in level
-                ],
+                "documents": [{"doc_id": d["doc_id"], "title": d["title"]} for d in level],
             }
             for level in levels
         ],

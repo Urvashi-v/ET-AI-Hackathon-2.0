@@ -16,7 +16,7 @@
 <body>
   <header class="app-header" data-app-header></header>
 
-  <main class="app-main">
+  <main class="app-main" id="main" tabindex="-1">
     <div class="page-head">
       <div>
         <p class="eyebrow">Quality &amp; regulatory</p>
@@ -119,7 +119,7 @@
     import { api } from './js/api.js';
     import {
       esc, provBadge, renderLoading, renderError, renderEmpty, renderCapability,
-      mountHeader, mountSystemStatus, fmtDate, fmtNumber,
+      mountHeader, mountSystemStatus, fmtDate, fmtNumber, qs,
     } from './js/ui.js';
 
     mountHeader('compliance.html');
@@ -311,6 +311,18 @@
 
     $('[data-close-detail]').addEventListener('click', () => { $('[data-detail-card]').hidden = true; });
 
+    // Same reasoning as the copilot: a compliance verdict is something an
+    // engineer forwards, and a verdict without a URL is a screenshot.
+    function applyDeepLink() {
+      const form = $('[data-scan-form]');
+      const asset = qs('asset') || qs('asset_tag');
+      const standard = qs('standard');
+      if (!asset && !standard) return;
+      if (asset) form.querySelector('[name="asset_tag"]').value = asset;
+      if (standard) form.querySelector('[name="standard"]').value = standard;
+      form.requestSubmit();
+    }
+
     $('[data-scan-form]').addEventListener('submit', (event) => {
       event.preventDefault();
       const form = new FormData(event.currentTarget);
@@ -468,6 +480,7 @@
       renderEvaluation();
     });
 
+    applyDeepLink();
   </script>
 </body>
 </html>

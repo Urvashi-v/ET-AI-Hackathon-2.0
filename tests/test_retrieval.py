@@ -207,7 +207,7 @@ class TestConfidenceAndAbstention:
         )
 
     def test_no_composable_answer_is_distinguished_from_weak_evidence(self):
-        """"Nothing in the evidence answers this" is not "the evidence is weak".
+        """ "Nothing in the evidence answers this" is not "the evidence is weak".
 
         The distinction used to be about a missing LLM. It no longer is: the
         extractive answerer needs no credential, so reaching this mode means
@@ -299,9 +299,9 @@ class TestClaimVerification:
     def test_verbatim_quote_check(self):
         passage = self._passage().text
         assert verify_quote("discharge pressure limit is 10 barg", passage)
-        assert verify_quote(
-            "The  discharge   pressure limit is 10 barg", passage
-        ), "whitespace-insensitive"
+        assert verify_quote("The  discharge   pressure limit is 10 barg", passage), (
+            "whitespace-insensitive"
+        )
         assert not verify_quote("the limit is 12 barg", passage)
         assert not verify_quote("", passage)
 
@@ -324,7 +324,7 @@ class TestLiveStateGate:
         assert asks_for_live_state("What is the real-time flow through V-102?")
 
     def test_document_currency_is_not_gated(self) -> None:
-        """"Which revision is current?" must still be answered.
+        """ "Which revision is current?" must still be answered.
 
         Currency of a procedure is exactly what this system is good at, and a
         gate that catches it would remove a capability to fix a different one.

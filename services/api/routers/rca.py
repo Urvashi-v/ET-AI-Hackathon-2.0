@@ -26,9 +26,9 @@ from typing import Any
 
 from fastapi import APIRouter
 
+from services.agents import rca as rca_agent
 from services.common import db, graph
 from services.common.logging import get_logger
-from services.agents import rca as rca_agent
 from services.common.schemas import (
     CandidateCauseOut,
     CapabilityState,
@@ -527,8 +527,40 @@ def _rank_similar_events(
 
 
 _STOPWORDS = frozenset(
-    "the a an and or of to in on at for from with by as is was were be been this that "
-    "it its after before during due found noted observed replaced".split()
+    [
+        "the",
+        "a",
+        "an",
+        "and",
+        "or",
+        "of",
+        "to",
+        "in",
+        "on",
+        "at",
+        "for",
+        "from",
+        "with",
+        "by",
+        "as",
+        "is",
+        "was",
+        "were",
+        "be",
+        "been",
+        "this",
+        "that",
+        "it",
+        "its",
+        "after",
+        "before",
+        "during",
+        "due",
+        "found",
+        "noted",
+        "observed",
+        "replaced",
+    ]
 )
 
 

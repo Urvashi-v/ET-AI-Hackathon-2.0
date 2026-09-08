@@ -145,7 +145,12 @@ async def evaluate(
             )
             continue
 
-        for asset in applicable or [None]:
+        # A requirement with no asset in scope is still evaluated once, against
+        # no asset -- "is there an emergency plan for the site" does not need an
+        # asset to be answerable. The sentinel is spelled out so the element type
+        # is visible rather than inferred from `or [None]`.
+        scoped: list[dict[str, Any] | None] = list(applicable) if applicable else [None]
+        for asset in scoped:
             findings.append(await _evaluate_one(req, asset, today))
 
     decidable = [f for f in findings if f.decidable]
@@ -276,17 +281,15 @@ async def _by_evidence_document(
         # a record. "Readings shall be recorded against fixed CMLs" is met by
         # readings existing against CMLs, whenever they were taken.
         has_cml = any(r["cml_id"] for r in rows)
-        if "cml" in req["obligation_text"].lower() or "condition monitoring" in req[
-            "obligation_text"
-        ].lower():
-            if not has_cml:
-                return _finding(
-                    req,
-                    asset=asset,
-                    state="gap",
-                    reason="Inspection records exist but none is recorded against a fixed CML.",
-                    evidence=evidence,
-                )
+        text = req["obligation_text"].lower()
+        if ("cml" in text or "condition monitoring" in text) and not has_cml:
+            return _finding(
+                req,
+                asset=asset,
+                state="gap",
+                reason="Inspection records exist but none is recorded against a fixed CML.",
+                evidence=evidence,
+            )
         return _finding(
             req,
             asset=asset,
@@ -445,9 +448,7 @@ async def _by_procedure_text(
         )
 
     result = await rerank.get_reranker().rerank(query, [r["text"] for r in procedure_rows])
-    ordered = (
-        [procedure_rows[i] for i in result.order] if result.order else procedure_rows
-    )
+    ordered = [procedure_rows[i] for i in result.order] if result.order else procedure_rows
     scores = (
         [result.normalised(i) for i in result.order]
         if result.order
@@ -531,9 +532,7 @@ async def _assets_in_scope(asset_tag: str | None) -> list[dict[str, Any]]:
     )
 
 
-def _applicable_assets(
-    req: dict[str, Any], assets: list[dict[str, Any]]
-) -> list[dict[str, Any]]:
+def _applicable_assets(req: dict[str, Any], assets: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Which assets a requirement actually bites on.
 
     A pressure-vessel clause evaluated against a pump is not a gap, it is a
@@ -594,7 +593,10 @@ def _add_months(start: date, months: int) -> date:
     """Calendar-month arithmetic, clamped to the end of a short month."""
     year = start.year + (start.month - 1 + months) // 12
     month = (start.month - 1 + months) % 12 + 1
-    day = min(start.day, [31, 29 if _leap(year) else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1])
+    day = min(
+        start.day,
+        [31, 29 if _leap(year) else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1],
+    )
     return date(year, month, day)
 
 

@@ -79,14 +79,28 @@ _CONDITION_PATTERNS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     (
         "dry_running",
         "Dry running / loss of seal flush",
-        ("dry run", "without liquid film", "no liquid film", "loss of flush", "ran dry",
-         "lost flush", "without flush", "starved"),
+        (
+            "dry run",
+            "without liquid film",
+            "no liquid film",
+            "loss of flush",
+            "ran dry",
+            "lost flush",
+            "without flush",
+            "starved",
+        ),
     ),
     (
         "throttled_suction",
         "Startup against a throttled or closed suction",
-        ("suction valve throttled", "throttled suction", "closed suction",
-         "suction valve closed", "suction throttled", "against a closed"),
+        (
+            "suction valve throttled",
+            "throttled suction",
+            "closed suction",
+            "suction valve closed",
+            "suction throttled",
+            "against a closed",
+        ),
     ),
     (
         "misalignment",
@@ -116,8 +130,14 @@ _CONDITION_PATTERNS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     (
         "procedure_gap",
         "Procedure does not require the check that would have prevented it",
-        ("does not require", "no interlock", "not required by", "procedure did not",
-         "no requirement", "still does not"),
+        (
+            "does not require",
+            "no interlock",
+            "not required by",
+            "procedure did not",
+            "no requirement",
+            "still does not",
+        ),
     ),
     (
         "operator_action",
@@ -332,7 +352,9 @@ def _collect_statements(
         )
 
     for event in sibling_events or []:
-        text = (event.get("as_found") or event.get("root_cause") or event.get("summary") or "").strip()
+        text = (
+            event.get("as_found") or event.get("root_cause") or event.get("summary") or ""
+        ).strip()
         if not text:
             continue
         out.append(

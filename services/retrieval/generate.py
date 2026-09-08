@@ -77,6 +77,10 @@ class ContextPassage:
     rank: int
     score: float
     is_current: bool = True
+    #: Revision label as printed on the document ("3", "4", "A"). Carried so a
+    #: citation can say *which* revision it quoted, not merely that a newer one
+    #: exists.
+    revision: str | None = None
     source_system: str = "unknown"
 
 
@@ -122,9 +126,10 @@ def assemble_context(passages: list[ContextPassage], graph_facts: list[GraphFact
         if passage.section_path:
             location.append(passage.section_path)
         where = f" ({'; '.join(location)})" if location else ""
+        revision = f" rev {passage.revision}" if passage.revision else ""
         currency = "" if passage.is_current else " [SUPERSEDED REVISION]"
         lines.append(
-            f"[{passage.marker}] {passage.doc_title}{where}{currency} "
+            f"[{passage.marker}] {passage.doc_title}{revision}{where}{currency} "
             f"-- source_system={passage.source_system}, data_class={passage.data_class}"
         )
         lines.append(passage.text.strip())

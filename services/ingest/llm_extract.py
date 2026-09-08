@@ -351,8 +351,7 @@ def _validate_response(
                     confidence=float(payload.get("confidence") or 0.0),
                     extractor=extractor,
                     reject_reason=(
-                        f"asserted equipment tag {asserted_tag!r} does not occur in the "
-                        "source text"
+                        f"asserted equipment tag {asserted_tag!r} does not occur in the source text"
                     ),
                 )
             ],

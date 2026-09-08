@@ -22,9 +22,9 @@ from typing import Any
 
 from fastapi import APIRouter, Query
 
+from services.agents import proactive
 from services.common import db
 from services.common.errors import NotFoundError
-from services.agents import proactive
 from services.common.schemas import (
     CapabilityState,
     CapabilityStatus,

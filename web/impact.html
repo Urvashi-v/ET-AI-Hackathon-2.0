@@ -41,7 +41,7 @@
 <body>
   <header class="app-header" data-app-header></header>
 
-  <main class="app-main">
+  <main class="app-main" id="main" tabindex="-1">
     <div class="page-head">
       <div>
         <p class="eyebrow">Business impact</p>
@@ -124,7 +124,7 @@
 
   <script type="module">
     import { api } from './js/api.js';
-    import { esc, mountHeader, mountSystemStatus, fmtNumber } from './js/ui.js';
+    import { esc, mountHeader, mountSystemStatus, fmtNumber, renderError } from './js/ui.js';
     import { FIELDS, calculate, sensitivity } from './js/roi.js';
 
     mountHeader('impact.html');
@@ -255,8 +255,10 @@
             not what it is worth.
           </p>`;
       } catch (error) {
-        node.innerHTML = `<p class="small dim">Could not read live system state: ${
-          esc(error.message || String(error))}</p>`;
+        // Same failure rendering as every other panel: the message, the error
+        // code and the request id, so a failure here is as reportable as one
+        // anywhere else in the dashboard.
+        renderError(node, error, { title: 'Could not read live system state' });
       }
     }
 

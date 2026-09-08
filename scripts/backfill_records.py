@@ -68,7 +68,9 @@ async def backfill(*, dry_run: bool) -> int:
                 rejected += 1
                 print(f"  - {head['title'][:44]:46} no incident structure found")
                 continue
-            missing = f" missing: {', '.join(record.fields_missing)}" if record.fields_missing else ""
+            missing = (
+                f" missing: {', '.join(record.fields_missing)}" if record.fields_missing else ""
+            )
             print(
                 f"  * {record.incident_id:12} {head['title'][:32]:34} "
                 f"{len(record.corrective_actions)} CAPA(s){missing}"

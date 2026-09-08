@@ -18,7 +18,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, File, Form, UploadFile, status
+from fastapi import APIRouter, File, Form, Query, UploadFile, status
 
 from services.common import bus, db
 from services.common.errors import FileValidationError, NotFoundError, ValidationError
@@ -285,8 +285,7 @@ async def get_job(job_id: str) -> IngestJobResponse:
 
 
 @router.get("", summary="Recent ingestion jobs")
-async def list_jobs(limit: int = 20) -> dict[str, Any]:
-    limit = max(1, min(limit, 100))
+async def list_jobs(limit: int = Query(20, ge=1, le=100)) -> dict[str, Any]:
     rows = await db.fetch_all(
         "SELECT job_id, status::text AS status, source, source_system, file_count, "
         "processed_count, failed_count, skipped_count, chunks_created, entities_created, "

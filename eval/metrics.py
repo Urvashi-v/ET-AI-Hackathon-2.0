@@ -117,9 +117,7 @@ def _extracted_tags(client: httpx.Client, doc_id: str) -> set[str]:
     try:
         detail = client.get(f"/api/v1/documents/{doc_id}").json()
         for chunk in detail.get("chunks", []):
-            payload = client.get(
-                f"/api/v1/documents/{doc_id}/chunks/{chunk['chunk_id']}"
-            ).json()
+            payload = client.get(f"/api/v1/documents/{doc_id}/chunks/{chunk['chunk_id']}").json()
             for mention in payload.get("mentions", []):
                 if mention.get("tag_kind") == "line":
                     continue
@@ -130,9 +128,7 @@ def _extracted_tags(client: httpx.Client, doc_id: str) -> set[str]:
         pass
 
     try:
-        detections = client.get(
-            f"/api/v1/drawings/{doc_id}/detections", params={"page": 1}
-        ).json()
+        detections = client.get(f"/api/v1/drawings/{doc_id}/detections", params={"page": 1}).json()
         for detection in detections.get("detections", []):
             if detection["kind"] != "tag":
                 continue

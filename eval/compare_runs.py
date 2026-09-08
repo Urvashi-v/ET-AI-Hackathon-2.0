@@ -18,12 +18,21 @@ the reason is worth knowing before it compounds.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import sys
 from pathlib import Path
 from typing import Any
 
 RESULTS_DIR = Path(__file__).resolve().parent / "results"
+
+# Windows consoles default to cp1252, and these reports print box-drawing
+# characters, arrows and ellipses. Without this the run dies on a UnicodeEncodeError
+# after doing all the work -- which is how a benchmark ends up with no output.
+if hasattr(sys.stdout, "reconfigure"):
+    with contextlib.suppress(ValueError, OSError):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 
 #: Metric paths worth tracking across runs, with the direction that counts as
 #: better. Abstention is the interesting one: recall on unanswerable questions
@@ -59,6 +68,33 @@ def load(path: Path) -> dict[str, Any]:
 
 def runs() -> list[Path]:
     return sorted(RESULTS_DIR.glob("*.json"))
+
+
+def resolve(reference: str) -> Path | None:
+    """Find a run from a path, a filename, a stem, or a tag.
+
+    Typing the full path to `eval/results/20260908T195645Z-day7-final.json` is
+    the least likely thing anyone does; they type the tag they gave the run.
+    """
+    direct = Path(reference)
+    if direct.is_file():
+        return direct
+    for candidate in (
+        RESULTS_DIR / reference,
+        RESULTS_DIR / f"{reference}.json",
+    ):
+        if candidate.is_file():
+            return candidate
+    # Fall back to a tag match, newest first.
+    for path in reversed(runs()):
+        if path.stem.endswith(f"-{reference}") or path.stem == reference:
+            return path
+        try:
+            if json.loads(path.read_text(encoding="utf-8")).get("tag") == reference:
+                return path
+        except (OSError, json.JSONDecodeError):
+            continue
+    return None
 
 
 def dig(payload: dict[str, Any], path: tuple[str, ...]) -> Any:
@@ -108,10 +144,7 @@ def compare(baseline: Path, candidate: Path) -> int:
             colour, mark = "\033[31m", "▼"
             regressions.append(f"{label} {before:.3f} → {after:.3f}")
         reset = "\033[0m" if colour else ""
-        print(
-            f"  {label:24} {before:>10.3f} {after:>10.3f} "
-            f"{colour}{delta:>+9.3f}{mark}{reset}"
-        )
+        print(f"  {label:24} {before:>10.3f} {after:>10.3f} {colour}{delta:>+9.3f}{mark}{reset}")
 
     print()
     if improvements:
@@ -159,6 +192,12 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--baseline", help="run to compare against (default: the previous one)")
     parser.add_argument("--candidate", help="run to evaluate (default: the latest)")
+    parser.add_argument(
+        "positional",
+        nargs="*",
+        metavar="RUN",
+        help="baseline and candidate, as a tag, a filename or a path",
+    )
     parser.add_argument("--history", action="store_true", help="one row per run")
     args = parser.parse_args(argv)
 
@@ -170,12 +209,18 @@ def main(argv: list[str] | None = None) -> int:
         print("Need at least two runs to compare. Use --history to list them.", file=sys.stderr)
         return 1
 
-    candidate = Path(args.candidate) if args.candidate else files[-1]
-    baseline = Path(args.baseline) if args.baseline else files[-2]
-    for path in (baseline, candidate):
-        if not path.is_file():
-            print(f"No such run: {path}", file=sys.stderr)
+    positional = list(args.positional)
+    baseline_ref = args.baseline or (positional.pop(0) if positional else None)
+    candidate_ref = args.candidate or (positional.pop(0) if positional else None)
+
+    baseline = resolve(baseline_ref) if baseline_ref else files[-2]
+    candidate = resolve(candidate_ref) if candidate_ref else files[-1]
+    for reference, path in ((baseline_ref, baseline), (candidate_ref, candidate)):
+        if path is None:
+            print(f"No such run: {reference}", file=sys.stderr)
+            print(f"Known runs: {', '.join(p.stem for p in files[-6:])}", file=sys.stderr)
             return 1
+    assert baseline and candidate
     return compare(baseline, candidate)
 
 

@@ -1,0 +1,32 @@
+# Line endings are a correctness concern in this repository, not a style one.
+#
+# Two real defects came from leaving them to chance. Document identity is a
+# SHA-256 over file bytes, so the same synthetic corpus generated on Windows and
+# inside the Linux container hashed differently and ingested as four duplicate
+# documents. And services/retrieval/rerank.py was committed with a mixture of
+# CRLF and bare CR, which rendered it as one unreadable block.
+#
+# Normalising to LF in the repository removes both classes of problem at the
+# source: every checkout, every container and every hash sees the same bytes.
+
+* text=auto eol=lf
+
+# Shell scripts and Dockerfiles are executed by Linux tooling that treats a
+# trailing CR as part of the interpreter path. These must never be CRLF.
+*.sh            text eol=lf
+Dockerfile*     text eol=lf
+Makefile        text eol=lf
+*.cypher        text eol=lf
+*.sql           text eol=lf
+
+# Fixtures whose bytes are the test. A newline translation here changes the
+# document id and silently invalidates the corpus.
+data/synthetic/generated/**     text eol=lf
+data/synthetic/generated_pdf/** binary
+
+# Binary: never touched, never diffed as text.
+*.pdf   binary
+*.png   binary
+*.jpg   binary
+*.onnx  binary
+*.ico   binary

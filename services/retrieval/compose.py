@@ -76,12 +76,33 @@ _QUANTITY = re.compile(
 #: the sentence features that would satisfy them.
 _INTENT_CUES: dict[QueryIntent, tuple[str, ...]] = {
     QueryIntent.PROCEDURAL: (
-        "shall", "must", "confirm", "open", "close", "apply", "stop", "start",
-        "required", "before", "permit", "isolat", "lock-out", "ppe",
+        "shall",
+        "must",
+        "confirm",
+        "open",
+        "close",
+        "apply",
+        "stop",
+        "start",
+        "required",
+        "before",
+        "permit",
+        "isolat",
+        "lock-out",
+        "ppe",
     ),
     QueryIntent.DIAGNOSTIC: (
-        "cause", "caused", "because", "due to", "failed", "failure", "found",
-        "evidence", "scored", "dry running", "root cause",
+        "cause",
+        "caused",
+        "because",
+        "due to",
+        "failed",
+        "failure",
+        "found",
+        "evidence",
+        "scored",
+        "dry running",
+        "root cause",
     ),
     QueryIntent.LOOKUP: ("is", "limit", "setpoint", "rated", "design", "specified"),
     QueryIntent.MULTI_HOP: ("spare", "standby", "sibling", "feeds", "downstream", "isolat"),
@@ -104,6 +125,12 @@ class ComposedClaim:
     char_start: int
     char_end: int
     score: float
+
+    @property
+    def marker_index(self) -> int:
+        """Sort C1, C2 ... C10 numerically rather than as strings."""
+        match = re.search(r"\d+", self.marker)
+        return int(match.group()) if match else 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -274,8 +301,7 @@ def _relevance(
     content = {
         term
         for term in query_terms
-        if term not in _FUNCTION_WORDS
-        and not any(term in tag or tag in term for tag in tags)
+        if term not in _FUNCTION_WORDS and not any(term in tag or tag in term for tag in tags)
     }
 
     # Drop terms the corpus contains nowhere at all. Two reasons, and the second
@@ -350,9 +376,13 @@ def _covers(term: str, answer_terms: set[str]) -> bool:
         return False
     return any(
         len(other) >= _STEM_PREFIX
-        and (other.startswith(term[:_STEM_PREFIX]) and (other.startswith(term) or term.startswith(other)))
+        and (
+            other.startswith(term[:_STEM_PREFIX])
+            and (other.startswith(term) or term.startswith(other))
+        )
         for other in answer_terms
     )
+
 
 #: Function words that survive the BM25 stopword list.
 #:
@@ -367,13 +397,62 @@ def _covers(term: str, answer_terms: set[str]) -> bool:
 #: content words even though they often appear in question framing.
 _FUNCTION_WORDS = frozenset(
     {
-        "doe", "does", "did", "do", "done", "keep", "keeps", "kept",
-        "many", "much", "any", "some", "there", "here", "what", "which",
-        "who", "whose", "when", "where", "why", "how", "been", "being",
-        "have", "has", "had", "will", "would", "should", "could", "can",
-        "may", "might", "must", "shall", "get", "got", "make", "made",
-        "give", "given", "take", "taken", "know", "need", "want", "like",
-        "tell", "say", "said", "show", "look", "come", "go", "put",
+        "doe",
+        "does",
+        "did",
+        "do",
+        "done",
+        "keep",
+        "keeps",
+        "kept",
+        "many",
+        "much",
+        "any",
+        "some",
+        "there",
+        "here",
+        "what",
+        "which",
+        "who",
+        "whose",
+        "when",
+        "where",
+        "why",
+        "how",
+        "been",
+        "being",
+        "have",
+        "has",
+        "had",
+        "will",
+        "would",
+        "should",
+        "could",
+        "can",
+        "may",
+        "might",
+        "must",
+        "shall",
+        "get",
+        "got",
+        "make",
+        "made",
+        "give",
+        "given",
+        "take",
+        "taken",
+        "know",
+        "need",
+        "want",
+        "like",
+        "tell",
+        "say",
+        "said",
+        "show",
+        "look",
+        "come",
+        "go",
+        "put",
     }
 )
 
@@ -528,12 +607,3 @@ def _jaccard(a: set[str], b: set[str]) -> float:
 
 def _squash(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip().lower()
-
-
-# ``marker_index`` sorts C1, C2, ... C10 numerically rather than as strings.
-def _marker_index(self: ComposedClaim) -> int:
-    match = re.search(r"\d+", self.marker)
-    return int(match.group()) if match else 0
-
-
-ComposedClaim.marker_index = property(_marker_index)  # type: ignore[attr-defined]

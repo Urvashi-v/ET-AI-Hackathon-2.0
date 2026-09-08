@@ -19,7 +19,7 @@ frontend, and they are also what FastAPI turns into the OpenAPI document at
 from __future__ import annotations
 
 from datetime import date, datetime
-from enum import Enum
+from enum import StrEnum
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
@@ -29,7 +29,7 @@ from pydantic import BaseModel, Field, field_validator
 # ---------------------------------------------------------------------------
 
 
-class DataClass(str, Enum):
+class DataClass(StrEnum):
     """Provenance class of a displayed value. Required on anything renderable."""
 
     REAL_SOURCE_DOCUMENT = "real_source_document"
@@ -40,7 +40,7 @@ class DataClass(str, Enum):
     REFERENCE_TAXONOMY = "reference_taxonomy"
 
 
-class DocumentType(str, Enum):
+class DocumentType(StrEnum):
     PID = "pid"
     ISOMETRIC = "isometric"
     DATASHEET = "datasheet"
@@ -58,7 +58,7 @@ class DocumentType(str, Enum):
     UNKNOWN = "unknown"
 
 
-class JobStatus(str, Enum):
+class JobStatus(StrEnum):
     QUEUED = "queued"
     RUNNING = "running"
     SUCCEEDED = "succeeded"
@@ -67,7 +67,7 @@ class JobStatus(str, Enum):
     CANCELLED = "cancelled"
 
 
-class QueryIntent(str, Enum):
+class QueryIntent(StrEnum):
     LOOKUP = "lookup"
     MULTI_HOP = "multi_hop"
     AGGREGATE = "aggregate"
@@ -77,7 +77,7 @@ class QueryIntent(str, Enum):
     UNANSWERABLE = "unanswerable"
 
 
-class ConfidenceMode(str, Enum):
+class ConfidenceMode(StrEnum):
     ANSWER = "ANSWER"
     ANSWER_WITH_CAVEAT = "ANSWER_WITH_CAVEAT"
     ABSTAIN_AND_ROUTE = "ABSTAIN_AND_ROUTE"
@@ -90,7 +90,7 @@ class ConfidenceMode(str, Enum):
     ABSTAIN_NO_ANSWER = "ABSTAIN_NO_ANSWER"
 
 
-class CapabilityState(str, Enum):
+class CapabilityState(StrEnum):
     AVAILABLE = "available"
     DISABLED = "disabled"
     NOT_CONFIGURED = "provider_not_configured"
@@ -139,7 +139,7 @@ class HealthResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class IngestSource(str, Enum):
+class IngestSource(StrEnum):
     UPLOAD = "upload"
     FILESYSTEM = "filesystem"
     S3 = "s3"
@@ -275,6 +275,16 @@ class Citation(BaseModel):
     retriever: str
     rank: int
     score: float
+    #: Revision standing of the source document.
+    #:
+    #: The pipeline has always known this -- Passage carries is_current, the
+    #: currency confidence signal is computed from it, and the assembled context
+    #: marks superseded passages with [SUPERSEDED REVISION]. It stopped at the
+    #: citation, so a technician reading the answer saw a superseded SOP and a
+    #: current one rendered identically and had to open the document to find out.
+    #: In this domain that is the most consequential thing the UI can leave out.
+    is_current: bool = True
+    revision: str | None = None
 
 
 class GraphFact(BaseModel):

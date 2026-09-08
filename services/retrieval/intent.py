@@ -340,7 +340,9 @@ def _comparison_frame(text: str, tags: list[str]) -> str:
     frame = text
     for tag in tags:
         frame = re.sub(re.escape(tag), " ", frame, flags=re.I)
-    frame = re.sub(r"\b(compare[ds]?|versus|vs\.?|between|against|with|and)\b", " ", frame, flags=re.I)
+    frame = re.sub(
+        r"\b(compare[ds]?|versus|vs\.?|between|against|with|and)\b", " ", frame, flags=re.I
+    )
     return re.sub(r"\s+", " ", frame).strip(" ?,")
 
 
