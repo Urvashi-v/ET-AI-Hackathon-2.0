@@ -391,6 +391,23 @@ walks all seven capability areas and returns real figures each time, and the
 screenshots in `docs/screenshots/` were captured from a stack rebuilt from
 nothing.
 
+**The clone was tested as a clone, not assumed.** A fresh `git clone` was checked
+for every file the startup script touches, confirmed to contain no `.env`, and
+used to generate the synthetic corpus on Windows. All eight files hashed
+byte-identically to the same corpus generated inside the Linux container:
+
+```
+406464a6…  inspection_ut_readings.csv          bfca8c02…  MANIFEST.json
+70c72de3…  sop_4412_crude_charge_pump_startup.md   c6946121…  incident_2019_seal_failure.md
+b782afb0…  work_orders_cmms_export.csv         cc7c1dbe…  moc_2023_07_impeller_trim.md
+bfafb5ea…  incident_2022_seal_failure.md       dcdd7a43…  sop_4412_rev4_…startup.md
+```
+
+That equality is the point, not a curiosity: document ids are SHA-256 over file
+bytes, so a newline translated between platforms changes a document's identity
+and re-ingestion silently creates duplicates instead of converging. It happened
+once. `.gitattributes` and an explicit `newline="\n"` are why it no longer does.
+
 ---
 
 ## 9. Future improvements
